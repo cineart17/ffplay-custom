@@ -1,0 +1,18 @@
+# Build output and downloads (the FFmpeg source and the compiled player do not belong in this repo)
+ffmpeg-*/
+*.tar.xz
+*.o
+ffplay
+ffplay_g
+ffplay-custom.bin.*
+
+# Backups made while updating
+*.before-*
+*.orig
+*.rej
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/

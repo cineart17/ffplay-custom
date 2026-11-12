@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+# ffplay-mpris: lets the desktop (the sound indicator in the top panel, media keys, playerctl)
+# control ffplay-custom. ffplay-custom starts this by itself and talks to it:
+#   ffplay-custom -> helper: lines on stdin (what is playing, paused or not, the position)
+#   helper -> ffplay-custom: lines appended to the command file given as the first argument
+# It exits when ffplay-custom closes its end of stdin.
+
+import os
+import sys
+import time
+
+try:
+    import gi
+    gi.require_version("Gio", "2.0")
+    gi.require_version("GLib", "2.0")
+    from gi.repository import Gio, GLib
+except Exception as exc:                      # python3-gi is missing
+    sys.stderr.write("ffplay-mpris: needs python3-gi (%s)\n" % exc)
+    sys.exit(1)
+
+NAME = "org.mpris.MediaPlayer2.ffplay-custom"
+PATH = "/org/mpris/MediaPlayer2"
+NO_TRACK = "/org/mpris/MediaPlayer2/TrackList/NoTrack"
+CMD_FILE = sys.argv[1] if len(sys.argv) > 1 else None
+
+XML = """
+<node>
+  <interface name="org.mpris.MediaPlayer2">
+    <method name="Raise"/>
+    <method name="Quit"/>
+    <property name="CanQuit" type="b" access="read"/>
+    <property name="CanRaise" type="b" access="read"/>
+    <property name="HasTrackList" type="b" access="read"/>
+    <property name="Identity" type="s" access="read"/>
+    <property name="DesktopEntry" type="s" access="read"/>
+    <property name="SupportedUriSchemes" type="as" access="read"/>
+    <property name="SupportedMimeTypes" type="as" access="read"/>
+  </interface>
+  <interface name="org.mpris.MediaPlayer2.Player">
+    <method name="Next"/>
+    <method name="Previous"/>
+    <method name="Pause"/>
+    <method name="PlayPause"/>
+    <method name="Stop"/>
+    <method name="Play"/>
+    <method name="Seek"><arg direction="in" name="Offset" type="x"/></method>
+    <method name="SetPosition">
+      <arg direction="in" name="TrackId" type="o"/>
+      <arg direction="in" name="Position" type="x"/>
+    </method>
+    <method name="OpenUri"><arg direction="in" name="Uri" type="s"/></method>
+    <signal name="Seeked"><arg name="Position" type="x"/></signal>
+    <property name="PlaybackStatus" type="s" access="read"/>
+    <property name="LoopStatus" type="s" access="readwrite"/>
+    <property name="Rate" type="d" access="readwrite"/>
+    <property name="Shuffle" type="b" access="readwrite"/>
+    <property name="Metadata" type="a{sv}" access="read"/>
+    <property name="Volume" type="d" access="readwrite"/>
+    <property name="Position" type="x" access="read"/>
+    <property name="MinimumRate" type="d" access="read"/>
+    <property name="MaximumRate" type="d" access="read"/>
+    <property name="CanGoNext" type="b" access="read"/>
+    <property name="CanGoPrevious" type="b" access="read"/>
+    <property name="CanPlay" type="b" access="read"/>
+    <property name="CanPause" type="b" access="read"/>
+    <property name="CanSeek" type="b" access="read"/>
+    <property name="CanControl" type="b" access="read"/>
+  </interface>
+</node>
+"""
+
+state = {
+    "status": "Stopped",
+    "title": "", "artist": "", "album": "", "length": 0, "art": "", "track": 0,
+    "pos": 0, "pos_at": time.monotonic(),
+    "volume": 1.0, "shuffle": False,
+    "next": False, "prev": False,
+}
+conn = None
+loop = None
+
+
+def send_command(line):
+    """Hand a command to ffplay-custom (it reads the file a few times a second)."""
+    if not CMD_FILE:
+        return
+    try:
+        with open(CMD_FILE, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def position_us():
+    pos = state["pos"]
+    if state["status"] == "Playing":
+        pos += int((time.monotonic() - state["pos_at"]) * 1000000)
+    if state["length"] > 0:
+        pos = min(pos, state["length"])
+    return max(pos, 0)
+
+
+def metadata():
+    if state["status"] == "Stopped" or not state["track"]:
+        return GLib.Variant("a{sv}", {"mpris:trackid": GLib.Variant("o", NO_TRACK)})
+    md = {
+        "mpris:trackid": GLib.Variant("o", "/org/ffplay_custom/track/%d" % state["track"]),
+        "mpris:length": GLib.Variant("x", state["length"]),
+        "xesam:title": GLib.Variant("s", state["title"]),
+    }
+    if state["artist"]:
+        md["xesam:artist"] = GLib.Variant("as", [state["artist"]])
+    if state["album"]:
+        md["xesam:album"] = GLib.Variant("s", state["album"])
+    if state["art"]:
+        md["mpris:artUrl"] = GLib.Variant("s", state["art"])
+    return GLib.Variant("a{sv}", md)
+
+
+def player_property(name):
+    can_play = True
+    table = {
+        "PlaybackStatus": lambda: GLib.Variant("s", state["status"]),
+        "LoopStatus": lambda: GLib.Variant("s", "None"),
+        "Rate": lambda: GLib.Variant("d", 1.0),
+        "Shuffle": lambda: GLib.Variant("b", state["shuffle"]),
+        "Metadata": metadata,
+        "Volume": lambda: GLib.Variant("d", state["volume"]),
+        "Position": lambda: GLib.Variant("x", position_us()),
+        "MinimumRate": lambda: GLib.Variant("d", 1.0),
+        "MaximumRate": lambda: GLib.Variant("d", 1.0),
+        "CanGoNext": lambda: GLib.Variant("b", state["next"]),
+        "CanGoPrevious": lambda: GLib.Variant("b", state["prev"]),
+        "CanPlay": lambda: GLib.Variant("b", can_play),
+        "CanPause": lambda: GLib.Variant("b", state["status"] != "Stopped"),
+        "CanSeek": lambda: GLib.Variant("b", state["status"] != "Stopped"),
+        "CanControl": lambda: GLib.Variant("b", True),
+    }
+    fn = table.get(name)
+    return fn() if fn else None
+
+
+def root_property(name):
+    table = {
+        "CanQuit": GLib.Variant("b", True),
+        "CanRaise": GLib.Variant("b", True),
+        "HasTrackList": GLib.Variant("b", False),
+        "Identity": GLib.Variant("s", "ffplay-custom"),
+        "DesktopEntry": GLib.Variant("s", "ffplay-custom"),
+        "SupportedUriSchemes": GLib.Variant("as", ["file"]),
+        "SupportedMimeTypes": GLib.Variant("as", ["audio/mpeg", "audio/flac", "audio/mp4", "video/mp4", "video/x-matroska"]),
+    }
+    return table.get(name)
+
+
+def emit_changed(names):
+    """Tell the desktop that some player properties changed."""
+    if not conn:
+        return
+    changed = {}
+    for n in names:
+        v = player_property(n)
+        if v is not None:
+            changed[n] = v
+    conn.emit_signal(None, PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                     GLib.Variant("(sa{sv}as)", ("org.mpris.MediaPlayer2.Player", changed, [])))
+
+
+def on_method(connection, sender, path, iface, method, params, invocation):
+    if iface == "org.mpris.MediaPlayer2":
+        if method == "Quit":
+            send_command("quit")
+        elif method == "Raise":
+            send_command("raise")
+    else:
+        if method == "Next":
+            send_command("next")
+        elif method == "Previous":
+            send_command("prev")
+        elif method == "Pause":
+            send_command("pause")
+        elif method == "PlayPause":
+            send_command("playpause")
+        elif method == "Stop":
+            send_command("stop")
+        elif method == "Play":
+            send_command("play")
+        elif method == "Seek":
+            send_command("seek %d" % params.unpack()[0])
+            # the position jumps: tell clients now
+            conn.emit_signal(None, PATH, iface, "Seeked",
+                             GLib.Variant("(x)", (min(max(position_us() + params.unpack()[0], 0), max(state["length"], 0)),)))
+        elif method == "SetPosition":
+            send_command("setpos %d" % params.unpack()[1])
+            conn.emit_signal(None, PATH, iface, "Seeked", GLib.Variant("(x)", (params.unpack()[1],)))
+    invocation.return_value(None)
+
+
+def on_get(connection, sender, path, iface, name):
+    return root_property(name) if iface == "org.mpris.MediaPlayer2" else player_property(name)
+
+
+def on_set(connection, sender, path, iface, name, value):
+    if name == "Volume":
+        state["volume"] = min(max(value.unpack(), 0.0), 1.0)
+        send_command("vol %.3f" % state["volume"])
+    elif name == "Shuffle":
+        send_command("shuffle %d" % (1 if value.unpack() else 0))
+    return True
+
+
+def sanitize(s):
+    return s.replace("\t", " ").replace("\n", " ").strip()
+
+
+def handle_line(line):
+    parts = line.rstrip("\n").split("\t")
+    cmd = parts[0]
+    if cmd == "status" and len(parts) > 1:
+        # keep the position steady across a change of state
+        state["pos"] = position_us()
+        state["pos_at"] = time.monotonic()
+        state["status"] = parts[1]
+        emit_changed(["PlaybackStatus", "Metadata", "CanPause", "CanSeek"])
+    elif cmd == "meta" and len(parts) >= 7:
+        state["title"], state["artist"], state["album"] = sanitize(parts[1]), sanitize(parts[2]), sanitize(parts[3])
+        try:
+            state["length"] = int(parts[4])
+            state["track"] = int(parts[6])
+        except ValueError:
+            pass
+        state["art"] = parts[5]
+        state["pos"] = 0
+        state["pos_at"] = time.monotonic()
+        emit_changed(["Metadata"])
+    elif cmd == "pos" and len(parts) > 1:
+        try:
+            state["pos"] = int(parts[1])
+            state["pos_at"] = time.monotonic()
+        except ValueError:
+            pass
+    elif cmd == "vol" and len(parts) > 1:
+        try:
+            state["volume"] = float(parts[1])
+            emit_changed(["Volume"])
+        except ValueError:
+            pass
+    elif cmd == "shuffle" and len(parts) > 1:
+        state["shuffle"] = parts[1] == "1"
+        emit_changed(["Shuffle"])
+    elif cmd == "can" and len(parts) > 2:
+        state["next"], state["prev"] = parts[1] == "1", parts[2] == "1"
+        emit_changed(["CanGoNext", "CanGoPrevious"])
+    elif cmd == "quit":
+        loop.quit()
+
+
+buf = b""
+
+
+def on_stdin(fd, condition):
+    global buf
+    if condition & GLib.IO_IN:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            data = b""
+        if not data:
+            loop.quit()
+            return False
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            handle_line(line.decode("utf-8", "replace"))
+    if condition & (GLib.IO_HUP | GLib.IO_ERR):
+        loop.quit()
+        return False
+    return True
+
+
+def on_bus(connection, name):
+    global conn
+    conn = connection
+    info = Gio.DBusNodeInfo.new_for_xml(XML)
+    for iface in info.interfaces:
+        connection.register_object(PATH, iface, on_method, on_get, on_set)
+
+
+def on_lost(connection, name):
+    # another copy owns the name, or there is no session bus: nothing to do
+    loop.quit()
+
+
+def main():
+    global loop
+    loop = GLib.MainLoop()
+    Gio.bus_own_name(Gio.BusType.SESSION, NAME, Gio.BusNameOwnerFlags.NONE, on_bus, None, on_lost)
+    GLib.io_add_watch(sys.stdin.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, on_stdin)
+    loop.run()
+
+
+if __name__ == "__main__":
+    main()
