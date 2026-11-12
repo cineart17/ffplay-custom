@@ -98,3 +98,7 @@ the libraries it uses.
 
 If you share a compiled build of ffplay-custom (a GitHub release, for example), the LGPL asks you to also make the
 matching source available. This repository does that, as long as the release is built from the same commit.
+
+## Requirements
+
+A few tools are needed for ffplay-custom to build and work, such as `zenity` for the file dialogs and `python3-gi` for the desktop media controls. See [REQUIREMENTS.md](REQUIREMENTS.md), or install everything with `./scripts/install-deps.sh`.
