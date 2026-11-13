@@ -962,6 +962,7 @@ static void ui_cover_backdrop(VideoState *is, int flip);
 static int ui_has_cover(VideoState *is);
 static void ui_flow_draw(VideoState *is);
 static int ui_flow_wants_redraw(VideoState *is);
+static int ui_flow_video(VideoState *is);
 static void ui_flow_swipe(VideoState *is, SDL_Event *ev);
 
 static void video_image_display(VideoState *is)
@@ -1029,7 +1030,7 @@ static void video_image_display(VideoState *is)
     }
 
     ui_cover_backdrop(is, vp->flip_v);      /* behind the cover art: its own colors, glowing */
-    if (!ui_has_cover(is))                  /* a cover is drawn by the queue view instead (ui_flow_draw) */
+    if (!ui_has_cover(is) && !ui_flow_video(is))    /* a cover is drawn by the queue view instead (ui_flow_draw) */
         SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
     set_sdl_yuv_conversion_mode(NULL);
     if (sp) {
@@ -3092,7 +3093,7 @@ static void ui_cover_backdrop(VideoState *is, int flip)
     int i, j, k = 0, W = is->width, H = is->height;
     float target;
 
-    if (!ui_has_cover(is) || W <= 0 || H <= 0)
+    if (!(ui_has_cover(is) || ui_flow_video(is)) || W <= 0 || H <= 0)
         return;
     if (strncmp(ui_bd_key, is->filename, sizeof(ui_bd_key) - 1)) {     /* a new file: take its colors */
         snprintf(ui_bd_key, sizeof(ui_bd_key), "%s", is->filename);
@@ -5301,6 +5302,9 @@ typedef struct UiCov {
     int cw, ch;                 /* the size of the picture inside it (smaller on one side if it was a video frame) */
     int tr, tg, tb;             /* the average color of the picture, for the disc */
     SDL_Texture *tex;
+    uint8_t *npx;               /* a video frame in its own shape (rounded corners), for the video tiles */
+    int nw, nh;
+    SDL_Texture *ntex;
 } UiCov;
 
 static UiCov *ui_cov = NULL;
@@ -5311,7 +5315,7 @@ static int ui_cov_todo[1024];
 static unsigned ui_cov_head = 0, ui_cov_tail = 0;
 
 /* Read a picture for a file: RGBA pixels, at most 256 on the long side. NULL if there is none. */
-static uint8_t *ui_cov_decode(const char *path, int *ow, int *oh, int *cw, int *ch)
+static uint8_t *ui_cov_decode(const char *path, int *ow, int *oh, int *cw, int *ch, uint8_t **nat, int *nw, int *nh)
 {
     AVFormatContext *ic = NULL;
     AVCodecContext *cc = NULL;
@@ -5325,7 +5329,10 @@ static uint8_t *ui_cov_decode(const char *path, int *ow, int *oh, int *cw, int *
     uint8_t *sq = NULL, *tiny = NULL, *tdst[4] = { NULL };
     struct SwsContext *sws2 = NULL;
     int tls[4] = { 0 }, x, y, ox, oy;
+    uint8_t *nt = NULL;
 
+    *nat = NULL;
+    *nw = *nh = 0;
     if (strstr(path, "://"))
         return NULL;
     if (avformat_open_input(&ic, path, NULL, NULL) < 0)
@@ -5385,6 +5392,24 @@ static uint8_t *ui_cov_decode(const char *path, int *ow, int *oh, int *cw, int *
     *oh = h;
     *cw = w;
     *ch = h;
+    if (w != h && w >= 32 && h >= 32 && !(st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        /* a video frame: keep a copy in its own shape, with rounded corners, for the video tiles */
+        int rr = FFMIN(w, h) / 11, k;
+
+        nt = av_malloc((size_t)w * h * 4);
+        if (nt) {
+            memcpy(nt, out, (size_t)w * h * 4);
+            for (y = 0; y < rr; y++)
+                for (x = 0; x < rr; x++) {
+                    double dxx = rr - x - 0.5, dyy = rr - y - 0.5;
+                    double cov = av_clipd(rr - sqrt(dxx * dxx + dyy * dyy) + 0.5, 0.0, 1.0);
+                    int at[4] = { y * w + x, y * w + w - 1 - x, (h - 1 - y) * w + x, (h - 1 - y) * w + w - 1 - x };
+
+                    for (k = 0; k < 4; k++)
+                        nt[at[k] * 4 + 3] = (uint8_t)(nt[at[k] * 4 + 3] * cov);
+                }
+        }
+    }
     if (w != h) {       /* not square (a video frame): a square with the picture in the middle and a frosted blur around it */
         sq = av_malloc(256 * 256 * 4);
         tiny = av_malloc(16 * 16 * 4);
@@ -5438,6 +5463,13 @@ static uint8_t *ui_cov_decode(const char *path, int *ow, int *oh, int *cw, int *
             }
     }
 end:
+    if (out && nt) {
+        *nat = nt;
+        *nw = w;
+        *nh = h;
+    } else {
+        av_free(nt);
+    }
     sws_freeContext(sws);
     sws_freeContext(sws2);
     av_free(tiny);
@@ -5452,8 +5484,8 @@ end:
 static int ui_cov_thread(void *arg)
 {
     char *p;
-    uint8_t *px;
-    int k, w, h, cw, ch;
+    uint8_t *px, *npx = NULL;
+    int k, w, h, cw, ch, nw = 0, nh = 0;
 
     for (;;) {
         SDL_LockMutex(ui_cov_mu);
@@ -5464,7 +5496,8 @@ static int ui_cov_thread(void *arg)
         SDL_UnlockMutex(ui_cov_mu);
 
         w = h = cw = ch = 0;
-        px = p ? ui_cov_decode(p, &w, &h, &cw, &ch) : NULL;
+        npx = NULL;
+        px = p ? ui_cov_decode(p, &w, &h, &cw, &ch, &npx, &nw, &nh) : NULL;
         av_free(p);
 
         SDL_LockMutex(ui_cov_mu);
@@ -5473,6 +5506,9 @@ static int ui_cov_thread(void *arg)
         ui_cov[k].h = h;
         ui_cov[k].cw = cw;
         ui_cov[k].ch = ch;
+        ui_cov[k].npx = npx;
+        ui_cov[k].nw = nw;
+        ui_cov[k].nh = nh;
         ui_cov[k].state = px ? 1 : 3;
         SDL_UnlockMutex(ui_cov_mu);
     }
@@ -5550,6 +5586,14 @@ static SDL_Texture *ui_cov_get(const char *path, int *w, int *h)
                 c->tb = cnt ? (int)(sb / cnt) : 40;
             }
             av_freep(&c->px);
+            if (c->npx) {                       /* the video frame in its own shape */
+                c->ntex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, c->nw, c->nh);
+                if (c->ntex) {
+                    SDL_UpdateTexture(c->ntex, NULL, c->npx, c->nw * 4);
+                    SDL_SetTextureBlendMode(c->ntex, SDL_BLENDMODE_BLEND);
+                }
+                av_freep(&c->npx);
+            }
             c->state = c->tex ? 2 : 3;
         }
         if (c->state == 2) {
@@ -5703,10 +5747,50 @@ static struct {
 } ui_flow_hit[16];                      /* the covers drawn last time, far to near, for clicks */
 
 /* Is the queue view showing? Audio, or audio with a cover; a video file plays full screen instead. */
+static int ui_vflow = 0;                /* 1 = the queue view is shown over videos too (key L) */
+static int ui_flow_vmode = 0;           /* 1 while the queue view is drawn over a video: own-shape tiles, no disc */
+
+/* The picture of a video file in its own shape (rounded corners), or NULL if it is not a video or is still being read */
+static SDL_Texture *ui_cov_native(const char *path, int *w, int *h)
+{
+    SDL_Texture *t = NULL;
+    int i;
+
+    if (!path || !ui_cov_mu)
+        return NULL;
+    SDL_LockMutex(ui_cov_mu);
+    for (i = 0; i < ui_cov_n; i++)
+        if (!strcmp(ui_cov[i].path, path)) {
+            if (ui_cov[i].state == 2 && ui_cov[i].ntex) {
+                t = ui_cov[i].ntex;
+                *w = ui_cov[i].nw;
+                *h = ui_cov[i].nh;
+            }
+            break;
+        }
+    SDL_UnlockMutex(ui_cov_mu);
+    return t;
+}
+
+/* Width divided by height of a video's picture, or 0 if it is not known (yet) */
+static double ui_cov_aspect(const char *path)
+{
+    int w = 0, h = 0;
+
+    return ui_cov_native(path, &w, &h) && h > 0 ? (double)w / h : 0.0;
+}
+
+/* Is the queue view showing over a video (key L)? */
+static int ui_flow_video(VideoState *is)
+{
+    return is && ui_vflow && is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+           q_count > 0 && q_pos >= 0 && q_pos < q_count;
+}
+
 static int ui_flow_on(VideoState *is)
 {
-    return is && is->audio_st && q_count > 0 && q_pos >= 0 && q_pos < q_count &&
-           (!is->video_st || (is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC));
+    return (is && is->audio_st && q_count > 0 && q_pos >= 0 && q_pos < q_count &&
+            (!is->video_st || (is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC))) || ui_flow_video(is);
 }
 
 static int ui_flow_wants_redraw(VideoState *is)
@@ -5719,7 +5803,7 @@ static double ui_flow_off(double B, double d)
 {
     double dc = av_clipd(d, -1.0, 1.0);
 
-    return B * (0.86 * dc + 0.42 * (d - dc)) + (d > 0 ? B * 0.40 * FFMIN(d, 1.0) : 0.0);    /* the right side leaves room for the disc */
+    return B * (0.86 * dc + 0.42 * (d - dc)) + (d > 0 && !ui_flow_vmode ? B * 0.40 * FFMIN(d, 1.0) : 0.0);    /* the right side leaves room for the disc (not for videos) */
 }
 
 /* The icon for a file with no picture, like the file manager's: a light page with an orange music note */
@@ -5877,7 +5961,9 @@ static void ui_flow_tile(int idx, const SDL_Rect *tile, int al, int md, double t
     SDL_Rect sh;
     int cw = 0, ch = 0, k;
 
-    tex = ui_cov_get(q_items[idx], &cw, &ch);
+    tex = ui_flow_vmode ? ui_cov_native(q_items[idx], &cw, &ch) : NULL;     /* a video keeps its own shape */
+    if (!tex)
+        tex = ui_cov_get(q_items[idx], &cw, &ch);
     if (tex) {                                  /* a soft shadow in the card's own shape: the picture again, black and bigger */
         for (k = ui_shadows_on ? 3 : 0; k >= 1; k--) {
             sh.x = tile->x - k * 4;
@@ -6148,11 +6234,11 @@ static void ui_flow_draw(VideoState *is)
     static float eq[NEQ], lvl = 0.0f;
     static int64_t eq_at = 0;
     int64_t now = av_gettime_relative();
-    int W = is->width, H = is->height, i, j, pass, cx, cy, ci, nb, bw, maxh, base;
+    int W = is->width, H = is->height, i, j, pass, cx, cy, ci, nb, bw, maxh;
     double dt, B, d, ad, sc, off, s, t = now / 1000000.0, pitch, amp;
     SDL_Rect sk, vo, tile, bar;
     char name[320], num[48];
-    int al, md, have, b0, b1, q;
+    int al, md, have, b0, b1, q, mid, chh;
     float wv[UI_WAVE_N];
 
     if (!ui_flow_on(is) || W < 260 || H < 200) {
@@ -6160,6 +6246,7 @@ static void ui_flow_draw(VideoState *is)
         ui_flow_moving = 0;
         return;
     }
+    ui_flow_vmode = ui_flow_video(is);          /* over a video: tiles in their own shape, no disc */
     dt = ui_flow_t ? av_clipd((now - ui_flow_t) / 1000000.0, 0.0, 0.1) : 0.0;
     ui_flow_t = now;
     if (q_pos != ui_flow_last_q) {              /* a new item started: the row glides to it */
@@ -6186,8 +6273,9 @@ static void ui_flow_draw(VideoState *is)
     }
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    B = FFMIN(W * 0.30, H * 0.44);
-    cx = W / 2 - (int)(B * 0.12);
+    B = ui_flow_vmode ? FFMIN(W * 0.36, H * 0.50) : FFMIN(W * 0.30, H * 0.44);     /* wide tiles need more room */
+    cx = W / 2 - (ui_flow_vmode ? 0 : (int)(B * 0.12));
+    chh = (int)B;                               /* the height of the middle tile */
     cy = (int)(H * 0.40);
     ui_flow_n = 0;
     ci = av_clip((int)(ui_flow_pos + 0.5), 0, q_count - 1);
@@ -6215,6 +6303,21 @@ static void ui_flow_draw(VideoState *is)
             if (d < 0)
                 ui_flow_rects[e].x += (int)s - ui_flow_rects[e].w;              /* the edge nearest the middle stays put */
             ui_flow_rects[e].y = cy - (int)(s / 2);
+            if (ui_flow_vmode) {                /* a video keeps its own shape: fitted into the square slot, centred in it */
+                double asp = ui_cov_aspect(q_items[i]);
+
+                if (asp > 0.0) {
+                    int sw = ui_flow_rects[e].w, sh = ui_flow_rects[e].h;
+                    int nw = asp >= 1.0 ? sw : (int)(sh * asp), nh = asp >= 1.0 ? (int)(sw / asp) : sh;
+
+                    ui_flow_rects[e].x += (sw - nw) / 2;
+                    ui_flow_rects[e].y += (sh - nh) / 2;
+                    ui_flow_rects[e].w = nw;
+                    ui_flow_rects[e].h = nh;
+                }
+            }
+            if (i == ci)
+                chh = ui_flow_rects[e].h;       /* the labels go under the middle tile */
         }
         for (pass = 4; pass >= 0; pass--) {     /* then draw them, the far ones first */
             for (i = ci - 5; i <= ci + 5; i++) {
@@ -6247,7 +6350,7 @@ static void ui_flow_draw(VideoState *is)
                 if (vw <= 0 || cut.w <= 0)
                     continue;                   /* hidden completely */
                 SDL_RenderSetClipRect(renderer, &cut);
-                if (i == q_pos) {               /* the disc only shows where it sticks out to the right of the cover */
+                if (i == q_pos && !ui_flow_vmode) {     /* the disc only shows where it sticks out to the right of the cover */
                     dcl.x = FFMAX(tile.x + tile.w, cut.x);
                     dcl.y = 0;
                     dcl.w = FFMAX(cut.x + cut.w - dcl.x, 0);
@@ -6262,6 +6365,17 @@ static void ui_flow_draw(VideoState *is)
                     }
                 }
                 ui_flow_tile(i, &tile, (ui_flow_dragging && i == ui_flow_press) ? al / 3 : al, md, tl[e]);
+                if (ui_flow_vmode && i == q_pos) {      /* a small dot in the bar color marks the video that is playing */
+                    int dd = FFMAX(tile.h / 34, 8);
+                    SDL_Rect dot;
+
+                    dot.w = dd;
+                    dot.h = dd;
+                    dot.x = tile.x + dd + 6;
+                    dot.y = tile.y + tile.h - 2 * dd - 6;
+                    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 235 * al / 255);
+                    ui_pill(&dot);
+                }
                 if (i != ci && vw >= 48) {      /* a small, faded title under the part that shows, tilted with its cover */
                     ui_q_name(i, name, 300);
                     ui_fit_text(name, 15, vw);
@@ -6282,9 +6396,9 @@ static void ui_flow_draw(VideoState *is)
 
     ui_q_name(ci, name, 300);                   /* the name under the middle cover */
     ui_fit_text(name, 22, (int)(W * 0.8));
-    ui_label_c(W / 2, cy + (int)(B / 2) + 40, name, 22, 255, 255, 255, 255);
+    ui_label_c(W / 2, cy + chh / 2 + 40, name, 22, 255, 255, 255, 255);
     snprintf(num, sizeof(num), "%d / %d", ci + 1, q_count);
-    ui_label_c(W / 2, cy + (int)(B / 2) + 70, num, 15, 175, 175, 175, 255);
+    ui_label_c(W / 2, cy + chh / 2 + 70, num, 15, 175, 175, 175, 255);
 
     {                                           /* the bars are always shown, from the left of the window to the right */
         int x0 = 24, span = W - 48;             /* where the bars start, and how wide they spread */
@@ -6294,8 +6408,12 @@ static void ui_flow_draw(VideoState *is)
         nb = FFMAX(span / 14, 24);
         pitch = (double)span / nb;
         bw = FFMAX((int)(pitch * 0.55), 2);
-        maxh = FFMIN(90, H / 6);                        /* the tallest a bar can be */
-        base = sk.y - 12;
+        {                                               /* the free space: under the name and counter, over the seek bar */
+            int top = cy + chh / 2 + 84, space = sk.y - 12 - top;
+
+            mid = top + space / 2;                      /* the bars grow up and down from this line */
+            maxh = av_clip(space - 12, 14, 220);        /* the tallest a bar can be */
+        }
         for (j = 0; j < nb; j++) {
             if (have) {                                 /* the shape of the whole track, bouncing with the music */
                 b0 = j * UI_WAVE_N / nb;
@@ -6311,9 +6429,9 @@ static void ui_flow_draw(VideoState *is)
                 amp = eq[j * NEQ / nb] * (0.55 + 0.45 * fabs(sin(j * 2.3 + t * 3.7)));
             }
             bar.x = x0 + (int)(j * pitch);
-            bar.h = 3 + (int)(amp * maxh);
+            bar.h = 3 + (int)(amp * (maxh - 3));
             bar.w = bw;
-            bar.y = base - bar.h;
+            bar.y = mid - bar.h / 2;                    /* no baseline: centred on the middle line, like a sound recorder */
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, 90);        /* every bar the same color, as dim as the old unplayed bars */
             ui_rr_fill(&bar, bw / 2);           /* rounded top and bottom, like the seek bar */
         }
@@ -8476,7 +8594,27 @@ static void ui_xf_abort(void)
 static void ui_sleep_tick(VideoState *is)
 {
     int64_t left;
+    double pos, dur;
 
+    /* "End of track" / "Sleep after this item": pause a moment before the item ends, and stay where we are.
+       The queue view and the queue stay as they are; play carries on into the last moments and then the next item. */
+    if (is && q_sleep_item && q_pos >= 0 && q_pos < q_count && q_sleep_item == q_items[q_pos] && !is->paused &&
+        is->ic && is->ic->duration > 0) {
+        pos = get_master_clock(is);
+        if (!isnan(pos)) {
+            if (is->ic->start_time != AV_NOPTS_VALUE)
+                pos -= is->ic->start_time / (double)AV_TIME_BASE;
+            dur = is->ic->duration / (double)AV_TIME_BASE;
+            if (dur - pos < 0.35 && dur - pos > -5.0) {
+                q_sleep_item = NULL;
+                ui_sleep_sel = 0;
+                ui_xf_abort();
+                is->xf_gain = 1.0f;
+                toggle_pause(is);
+                is->force_refresh = 1;
+            }
+        }
+    }
     if (!q_sleep_end)
         return;
     left = q_sleep_end - av_gettime_relative();
@@ -9457,6 +9595,10 @@ static void event_loop(VideoState *cur_stream)
                 break;
             case SDLK_t:
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
+                break;
+            case SDLK_l:                /* the queue view over a video: the videos of the queue as tiles */
+                ui_vflow = !ui_vflow;
+                cur_stream->force_refresh = 1;
                 break;
             case SDLK_w:
                 if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
