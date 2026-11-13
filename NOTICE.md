@@ -27,6 +27,7 @@ options, or other external libraries, the license of the result can change. Chec
 | --- | --- | --- |
 | FFmpeg libraries (libavcodec, libavformat, libavutil, libswscale, libswresample, libavfilter, libavdevice) | Decoding and playback | LGPL 2.1 or later |
 | SDL2 | Window, drawing and audio output | zlib |
+| SDL2_ttf | Drawing text | zlib |
 | libdav1d | AV1 decoding | BSD 2-Clause |
 | PyGObject and GLib (optional) | `tools/ffplay-mpris`, desktop media controls | LGPL 2.1 or later |
 

@@ -2,6 +2,13 @@
 
 Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
 
+## Repository (after v20)
+- `scripts/build.sh` links SDL2_ttf (it was missing from the link line) and builds in `~/ffplay-custom-build`, so it cannot overwrite a working tree in `~/build`.
+- `REQUIREMENTS.md` and `scripts/install-deps.sh` list and install everything the player needs.
+
+## v20
+- A "modified by" notice under the license header of `ffplay.c`.
+
 ## v19
 - The waveform bars are dimmer again (white, alpha 90) and stretch across the whole window, above the volume bar too.
 

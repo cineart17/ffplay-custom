@@ -41,17 +41,17 @@ Tested on Ubuntu 24.04 (gcc 13).
 
 1. Install what the build needs:
 ```
-sudo apt install -y build-essential nasm pkg-config curl libsdl2-dev libdav1d-dev
+./scripts/install-deps.sh
 ```
 
-2. Build (this downloads FFmpeg 6.1.1 into `~/build`, applies the patch and compiles):
+2. Build (this downloads FFmpeg 6.1.1 into `~/ffplay-custom-build`, applies the patch and compiles):
 ```
 ./scripts/build.sh
 ```
 
 3. Install the player:
 ```
-cp --remove-destination ~/build/ffmpeg-6.1.1/ffplay ~/.local/bin/ffplay-custom
+cp --remove-destination ~/ffplay-custom-build/ffmpeg-6.1.1/ffplay ~/.local/bin/ffplay-custom
 ```
 
 4. Optional: desktop media controls. This needs the Python GObject bindings:
