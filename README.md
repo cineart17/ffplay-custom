@@ -54,9 +54,8 @@ Tested on Ubuntu 24.04 (gcc 13).
 cp --remove-destination ~/ffplay-custom-build/ffmpeg-6.1.1/ffplay ~/.local/bin/ffplay-custom
 ```
 
-4. Optional: desktop media controls. This needs the Python GObject bindings:
+4. Optional: desktop media controls (the Python GObject bindings came with step 1):
 ```
-sudo apt install -y python3-gi gir1.2-glib-2.0
 install -m 755 tools/ffplay-mpris ~/.local/bin/ffplay-mpris
 ```
 
@@ -72,6 +71,10 @@ ffplay-custom ~/Music/some-album/
 ```
 
 Settings (bar color, hide delay and so on) are stored in `~/.config/ffplay-custom/settings.conf`.
+
+## Requirements
+
+A few tools are needed for ffplay-custom to build and work, such as `zenity` for the file dialogs and `python3-gi` for the desktop media controls. See [REQUIREMENTS.md](REQUIREMENTS.md), or install everything with `./scripts/install-deps.sh`.
 
 ## Working on the code
 
@@ -98,7 +101,3 @@ the libraries it uses.
 
 If you share a compiled build of ffplay-custom (a GitHub release, for example), the LGPL asks you to also make the
 matching source available. This repository does that, as long as the release is built from the same commit.
-
-## Requirements
-
-A few tools are needed for ffplay-custom to build and work, such as `zenity` for the file dialogs and `python3-gi` for the desktop media controls. See [REQUIREMENTS.md](REQUIREMENTS.md), or install everything with `./scripts/install-deps.sh`.

@@ -5,6 +5,7 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 ## Repository (after v20)
 - `scripts/build.sh` links SDL2_ttf (it was missing from the link line) and builds in `~/ffplay-custom-build`, so it cannot overwrite a working tree in `~/build`.
 - `REQUIREMENTS.md` and `scripts/install-deps.sh` list and install everything the player needs.
+- README tidied: Requirements moved up, and the build steps no longer repeat the python3-gi install.
 
 ## v20
 - A "modified by" notice under the license header of `ffplay.c`.
