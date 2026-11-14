@@ -61,7 +61,7 @@
  static int64_t audio_callback_time;
  
  #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
-@@ -947,6 +958,13 @@
+@@ -947,6 +958,21 @@
  #endif
  }
  
@@ -70,23 +70,32 @@
 +static void ui_flow_draw(VideoState *is);
 +static int ui_flow_wants_redraw(VideoState *is);
 +static int ui_flow_video(VideoState *is);
++static void ui_live_grab(VideoState *is, const SDL_Rect *rect, int flip);
++static double ui_vflow_p = 0.0;         /* 0 to 1: how far the playing video has shrunk into its tile (it animates when L is pressed) */
++static double ui_vflow_ep = 0.0;        /* the same, eased: slow, quick, slow */
++static int64_t ui_vflow_t = 0;          /* when the animation was last stepped */
++static SDL_Rect ui_live_rect;           /* where the video is drawn full screen (set in video_image_display) */
++static int ui_live_ok = 0;              /* 1 = the frame on screen was copied into ui_live_tex in this drawing */
++static SDL_Texture *ui_live_tex = NULL; /* the frame on screen, as a picture of its own for the tile */
++static int ui_live_w = 0, ui_live_h = 0;
 +static void ui_flow_swipe(VideoState *is, SDL_Event *ev);
 +
  static void video_image_display(VideoState *is)
  {
      Frame *vp;
-@@ -1011,7 +1029,9 @@
+@@ -1011,7 +1037,10 @@
          vp->flip_v = vp->frame->linesize[0] < 0;
      }
  
 -    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
 +    ui_cover_backdrop(is, vp->flip_v);      /* behind the cover art: its own colors, glowing */
++    ui_live_grab(is, &rect, vp->flip_v);    /* over a video: copy the frame, the tile shows it */
 +    if (!ui_has_cover(is) && !ui_flow_video(is))    /* a cover is drawn by the queue view instead (ui_flow_draw) */
 +        SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
      set_sdl_yuv_conversion_mode(NULL);
      if (sp) {
  #if USE_ONEPASS_SUBTITLE_RENDER
-@@ -1037,6 +1057,9 @@
+@@ -1037,6 +1066,9 @@
      return a < 0 ? a%b + b : a%b;
  }
  
@@ -96,7 +105,7 @@
  static void video_audio_display(VideoState *s)
  {
      int i, i_start, x, y1, y, ys, delay, n, nb_display_channels;
-@@ -1044,6 +1067,9 @@
+@@ -1044,6 +1076,9 @@
      int64_t time_diff;
      int rdft_bits, nb_freq;
  
@@ -106,7 +115,7 @@
      for (rdft_bits = 1; (1 << rdft_bits) < 2 * s->height; rdft_bits++)
          ;
      nb_freq = 1 << (rdft_bits - 1);
-@@ -1200,7 +1226,7 @@
+@@ -1200,7 +1235,7 @@
      switch (codecpar->codec_type) {
      case AVMEDIA_TYPE_AUDIO:
          decoder_abort(&is->auddec, &is->sampq);
@@ -115,7 +124,7 @@
          decoder_destroy(&is->auddec);
          swr_free(&is->swr_ctx);
          av_freep(&is->audio_buf1);
-@@ -1282,8 +1308,216 @@
+@@ -1282,8 +1317,216 @@
      av_free(is);
  }
  
@@ -332,7 +341,7 @@
      if (is) {
          stream_close(is);
      }
-@@ -1298,7 +1532,7 @@
+@@ -1298,7 +1541,7 @@
          printf("\n");
      SDL_Quit();
      av_log(NULL, AV_LOG_QUIET, "%s", "");
@@ -341,7 +350,7 @@
  }
  
  static void sigterm_handler(int sig)
-@@ -1318,6 +1552,9 @@
+@@ -1318,6 +1561,9 @@
      default_height = rect.h;
  }
  
@@ -351,7 +360,7 @@
  static int video_open(VideoState *is)
  {
      int w,h;
-@@ -1341,18 +1578,5117 @@
+@@ -1341,18 +1587,5291 @@
      return 0;
  }
  
@@ -365,6 +374,27 @@
 +static int ui_drag = 0;               /* 0 = none, 1 = seek bar, 2 = volume bar */
 +static double ui_seek_frac = 0.0;
 +static int64_t ui_hold_until = 0;
++
++/* ----- light glass: on the frosted glass, text and lines that were light are drawn dark instead -----
++   ui_ink_dark is 1 while a panel on glass is drawn. Light grays and white then turn dark (the lighter they were, the
++   darker they become); colors, such as your bar color, stay as they are. */
++static int ui_ink_dark = 0;
++
++static void ui_ink(int *r, int *g, int *b)
++{
++    if (ui_ink_dark && FFMIN3(*r, *g, *b) >= 100 && FFMAX3(*r, *g, *b) - FFMIN3(*r, *g, *b) <= 40) {
++        *r = (255 - *r) * 8 / 10;
++        *g = (255 - *g) * 8 / 10;
++        *b = (255 - *b) * 8 / 10;
++    }
++}
++
++static int ui_set_color(SDL_Renderer *rd, int r, int g, int b, int a)
++{
++    ui_ink(&r, &g, &b);
++    return (SDL_SetRenderDrawColor)(rd, r, g, b, a);
++}
++#define SDL_SetRenderDrawColor(rd, r, g, b, a) ui_set_color(rd, r, g, b, a)
 +
 +/* Show the cursor and bar again and restart the hide timer */
 +static void ui_wake(void)
@@ -610,7 +640,7 @@
 +    double frac = 0.0, vfrac;
 +    char buf[8];
 +
-+    if (cursor_hidden && !is->paused) return;
++    if (cursor_hidden) return;                  /* the bar hides after the hide delay, paused or not */
 +
 +    if (!UI_ON(is) || !is->ic)
 +        return;
@@ -1701,6 +1731,7 @@
 +    dst.y = cy - h / 2;
 +    dst.w = w;
 +    dst.h = h;
++    ui_ink(&r, &g, &b);                         /* dark text on the light glass */
 +    SDL_SetTextureColorMod(tex, r, g, b);
 +    SDL_SetTextureAlphaMod(tex, a);
 +    SDL_RenderCopy(renderer, tex, NULL, &dst);
@@ -1869,6 +1900,7 @@
 +    double t = av_gettime_relative() / 1000000.0, u, w, shimmer, bright, swell;
 +    int i, j, k = 0, W = is->width, H = is->height;
 +    float target;
++    double bdk = ui_flow_video(is) ? ui_vflow_ep : 1.0;     /* the backdrop fades in while the video shrinks into its tile */
 +
 +    if (!(ui_has_cover(is) || ui_flow_video(is)) || W <= 0 || H <= 0)
 +        return;
@@ -1908,11 +1940,12 @@
 +            p->color.r = (Uint8)av_clipd(ui_bd_col[j][i].r * shimmer, 0, 255);
 +            p->color.g = (Uint8)av_clipd(ui_bd_col[j][i].g * shimmer, 0, 255);
 +            p->color.b = (Uint8)av_clipd(ui_bd_col[j][i].b * shimmer, 0, 255);
-+            p->color.a = 255;
++            p->color.a = (Uint8)(255 * bdk);
 +            p->tex_coord.x = 0;
 +            p->tex_coord.y = 0;
 +        }
 +    }
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 +    SDL_RenderGeometry(renderer, NULL, v, UI_BD_H * UI_BD_W, idx, (UI_BD_W - 1) * (UI_BD_H - 1) * 6);
 +
 +    /* a dark veil, so the controls on top stay readable */
@@ -1921,7 +1954,7 @@
 +    veil.w = W;
 +    veil.h = H;
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 45);
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, (int)(45 * bdk));
 +    SDL_RenderFillRect(renderer, &veil);
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 +}
@@ -1932,7 +1965,7 @@
 +    static int64_t last = 0;
 +    int64_t now = av_gettime_relative();
 +
-+    if (ui_has_cover(is) && !is->paused && now - last > 33000) {
++    if ((ui_has_cover(is) || ui_flow_video(is)) && !is->paused && now - last > 33000) {
 +        last = now;
 +        is->force_refresh = 1;
 +    }
@@ -2204,9 +2237,10 @@
 +   a faint sheen at the top, a thin inner highlight and a hairline edge. */
 +static void ui_glass(const SDL_Rect *t, int r)
 +{
-+    int row, run = -1, inset, top3;
++    int row, run = -1, inset, top3, ink = ui_ink_dark;
 +    SDL_Rect line;
 +
++    ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
 +    r = FFMIN(r, FFMIN(t->w, t->h) / 2);
 +    ui_shadow(t, r);
 +
@@ -2236,14 +2270,15 @@
 +        line.y = t->y + row;
 +        line.w = t->w - 2 * inset;
 +        line.h = 1;
-+        SDL_SetRenderDrawColor(renderer, 10 + cfg_bar_r / 12, 12 + cfg_bar_g / 12, 18 + cfg_bar_b / 12, 118);
++        SDL_SetRenderDrawColor(renderer, 225 + cfg_bar_r / 10, 228 + cfg_bar_g / 10, 232 + cfg_bar_b / 10, 168);     /* a light haze */
 +        SDL_RenderFillRect(renderer, &line);
 +        if (row < top3) {
-+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 14 - 14 * row / top3);
++            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 70 - 70 * row / top3);
 +            SDL_RenderFillRect(renderer, &line);
 +        }
 +
 +    }
++    ui_ink_dark = ink;
 +}
 +
 +/* The idle background: a few soft glows in the bar color that drift slowly.
@@ -2478,6 +2513,7 @@
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
 +    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
 +    SDL_RenderClear(renderer);
++    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
 +    else if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
@@ -2496,7 +2532,9 @@
 +    }
 +    ui_menu_stream = is;
 +    ui_menu_draw();
++    ui_ink_dark = 1;                            /* the preferences are light glass: dark text on them */
 +    ui_prefs_draw();
++    ui_ink_dark = 0;
 +    ui_snap_draw();
 +    SDL_RenderPresent(renderer);
 +}
@@ -3538,6 +3576,7 @@
 +    }
 +
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
++    ui_ink_dark = !ui_idle;                     /* the card is light glass: dark text on it (the idle screen has no card) */
 +    for (i = 0; i < UI_MENU_ITEMS; i++) {
 +        row.x = r.x;
 +        row.y = r.y + i * UI_MENU_ROW;
@@ -3568,6 +3607,7 @@
 +        ui_logo_metrics(ww, wh, &ls, &gap);
 +        ui_logo_draw(r.x - gap - ls / 2, wh / 2, ls);
 +    }
++    ui_ink_dark = 1;                            /* the side panels are light glass too */
 +    if (ui_open_open)
 +        ui_open_draw(ww, wh);
 +    else if (ui_q_open)
@@ -3576,6 +3616,7 @@
 +        ui_info_draw(ww, wh);
 +    if (ui_ctx_open)
 +        ui_ctx_draw(ww, wh);
++    ui_ink_dark = 0;
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 +}
 +
@@ -4535,6 +4576,11 @@
 +
 +    if (!path || !ui_cov_mu)
 +        return NULL;
++    {
++        int cw, ch;
++
++        ui_cov_get(path, &cw, &ch);             /* also starts the reading and makes the textures, so there is no square flash first */
++    }
 +    SDL_LockMutex(ui_cov_mu);
 +    for (i = 0; i < ui_cov_n; i++)
 +        if (!strcmp(ui_cov[i].path, path)) {
@@ -4557,10 +4603,10 @@
 +    return ui_cov_native(path, &w, &h) && h > 0 ? (double)w / h : 0.0;
 +}
 +
-+/* Is the queue view showing over a video (key L)? */
++/* Is the queue view showing over a video (key L)? It also shows while the video shrinks into its tile or grows back. */
 +static int ui_flow_video(VideoState *is)
 +{
-+    return is && ui_vflow && is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
++    return is && (ui_vflow || ui_vflow_p > 0.002) && is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
 +           q_count > 0 && q_pos >= 0 && q_pos < q_count;
 +}
 +
@@ -4738,7 +4784,7 @@
 +    SDL_Rect sh;
 +    int cw = 0, ch = 0, k;
 +
-+    tex = ui_flow_vmode ? ui_cov_native(q_items[idx], &cw, &ch) : NULL;     /* a video keeps its own shape */
++    tex = ui_cov_native(q_items[idx], &cw, &ch);        /* a video keeps its own shape, whatever is playing */
 +    if (!tex)
 +        tex = ui_cov_get(q_items[idx], &cw, &ch);
 +    if (tex) {                                  /* a soft shadow in the card's own shape: the picture again, black and bigger */
@@ -4754,6 +4800,106 @@
 +    }
 +    if (tex)
 +        ui_flow_quad(tex, tile, al, md, tilt);
++}
++
++/* The size of the picture of item i fitted into a sw x sh slot: a video keeps its own shape (the playing one: the shape of the
++   screen it is on), covers and files with no picture fill the slot */
++static void ui_flow_fit(int i, int sw, int sh, int *nw, int *nh)
++{
++    double asp = (i == q_pos && ui_flow_vmode && ui_live_ok && ui_live_rect.h > 0)
++                 ? (double)ui_live_rect.w / ui_live_rect.h : ui_cov_aspect(q_items[i]);
++
++    *nw = sw;
++    *nh = sh;
++    if (asp > 0.0) {
++        *nw = asp >= 1.0 ? sw : (int)(sh * asp);
++        *nh = asp >= 1.0 ? (int)(sw / asp) : sh;
++    }
++}
++
++/* Like ui_flow_quad, but with rounded corners (radius rr): the columns are crowded near the left and right edges, where the
++   corners are, and each column's top and bottom are moved in by how far the corner cuts in there */
++static void ui_flow_quad_round(SDL_Texture *tex, const SDL_Rect *t, int al, int md, double tilt, int rr)
++{
++    enum { NC = 24 };
++    SDL_Vertex v[(NC + 1) * 2];
++    int idx[NC * 6], k;
++    double cyt = t->y + t->h / 2.0, kin = 1.0 - 0.16 * fabs(tilt);
++    SDL_Color c;
++
++    rr = av_clip(rr, 0, FFMIN(t->w, t->h) / 2);
++    c.r = (Uint8)md;
++    c.g = (Uint8)md;
++    c.b = (Uint8)md;
++    c.a = (Uint8)av_clip(al, 0, 255);
++    for (k = 0; k <= NC; k++) {
++        double x, dx, inset = 0.0, u, f, hh;
++
++        if (k <= 8)                             /* the left corner */
++            x = rr * k / 8.0;
++        else if (k <= 16)                       /* the straight part */
++            x = rr + (t->w - 2.0 * rr) * (k - 8) / 8.0;
++        else                                    /* the right corner */
++            x = t->w - rr + rr * (k - 16) / 8.0;
++        dx = FFMIN(x, t->w - x);
++        if (dx < rr)
++            inset = rr - sqrt(FFMAX((double)rr * rr - (rr - dx) * (rr - dx), 0.0));
++        u = x / FFMAX(t->w, 1);
++        f = tilt < 0 ? 1.0 - (1.0 - kin) * u : tilt > 0 ? kin + (1.0 - kin) * u : 1.0;      /* the same tilt as the covers */
++        hh = (t->h / 2.0 - inset) * f;
++        v[k * 2].position.x = (float)(t->x + x);
++        v[k * 2].position.y = (float)(cyt - hh);
++        v[k * 2].color = c;
++        v[k * 2].tex_coord.x = (float)u;
++        v[k * 2].tex_coord.y = (float)(inset / FFMAX(t->h, 1));
++        v[k * 2 + 1].position.x = (float)(t->x + x);
++        v[k * 2 + 1].position.y = (float)(cyt + hh);
++        v[k * 2 + 1].color = c;
++        v[k * 2 + 1].tex_coord.x = (float)u;
++        v[k * 2 + 1].tex_coord.y = (float)(1.0 - inset / FFMAX(t->h, 1));
++    }
++    for (k = 0; k < NC; k++) {
++        idx[k * 6] = k * 2;
++        idx[k * 6 + 1] = k * 2 + 1;
++        idx[k * 6 + 2] = k * 2 + 2;
++        idx[k * 6 + 3] = k * 2 + 1;
++        idx[k * 6 + 4] = k * 2 + 3;
++        idx[k * 6 + 5] = k * 2 + 2;
++    }
++    SDL_RenderGeometry(renderer, tex, v, (NC + 1) * 2, idx, NC * 6);
++}
++
++/* While the queue view is over a video: remember where the video is drawn full screen, and copy the frame that is on screen
++   into a picture of its own (ui_live_tex), so its tile can show it, rounded, while it plays. Called from video_image_display,
++   where the colors of the frame are already set up. */
++static void ui_live_grab(VideoState *is, const SDL_Rect *rect, int flip)
++{
++    SDL_Texture *prev;
++    int w, h;
++
++    ui_live_ok = 0;
++    if (!ui_flow_video(is) || !is->vid_texture || rect->w < 16 || rect->h < 16)
++        return;
++    ui_live_rect = *rect;
++    w = FFMIN(rect->w, 1920);
++    h = (int)((double)w * rect->h / rect->w);
++    if (!ui_live_tex || ui_live_w != w || ui_live_h != h) {
++        if (ui_live_tex)
++            SDL_DestroyTexture(ui_live_tex);
++        ui_live_tex = ui_make_target(w, h);
++        ui_live_w = w;
++        ui_live_h = h;
++        if (ui_live_tex)
++            SDL_SetTextureBlendMode(ui_live_tex, SDL_BLENDMODE_BLEND);
++    }
++    if (!ui_live_tex)
++        return;
++    prev = SDL_GetRenderTarget(renderer);
++    SDL_SetRenderTarget(renderer, ui_live_tex);
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
++    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
++    SDL_SetRenderTarget(renderer, prev);
++    ui_live_ok = 1;
 +}
 +
 +/* A title drawn as part of a turned card: it hangs under the cover's lower edge and follows it (same tilt as the cover) */
@@ -5015,7 +5161,7 @@
 +    double dt, B, d, ad, sc, off, s, t = now / 1000000.0, pitch, amp;
 +    SDL_Rect sk, vo, tile, bar;
 +    char name[320], num[48];
-+    int al, md, have, b0, b1, q, mid, chh;
++    int al, md, have, b0, b1, q, mid, chh, nal;
 +    float wv[UI_WAVE_N];
 +
 +    if (!ui_flow_on(is) || W < 260 || H < 200) {
@@ -5024,8 +5170,22 @@
 +        return;
 +    }
 +    ui_flow_vmode = ui_flow_video(is);          /* over a video: tiles in their own shape, no disc */
++    if (!ui_flow_vmode) {                       /* an audio item shows the queue view: a video that follows keeps it (L goes to the full screen video) */
++        ui_vflow = 1;
++        ui_vflow_p = 1.0;
++        ui_vflow_ep = 1.0;
++    }
 +    dt = ui_flow_t ? av_clipd((now - ui_flow_t) / 1000000.0, 0.0, 0.1) : 0.0;
 +    ui_flow_t = now;
++    {                                           /* the video shrinks into its tile (or grows back) smoothly when L is pressed */
++        double want = ui_vflow ? 1.0 : 0.0, dtv = ui_vflow_t ? av_clipd((now - ui_vflow_t) / 1000000.0, 0.0, 0.1) : 0.0;
++
++        ui_vflow_t = now;
++        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * 8.0));
++        if (fabs(want - ui_vflow_p) < 0.004)
++            ui_vflow_p = want;
++        ui_vflow_ep = ui_vflow_p * ui_vflow_p * (3.0 - 2.0 * ui_vflow_p);
++    }
 +    if (q_pos != ui_flow_last_q) {              /* a new item started: the row glides to it */
 +        ui_flow_last_q = q_pos;
 +        ui_flow_target = q_pos;
@@ -5040,6 +5200,8 @@
 +    ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
 +    if (!ui_flow_moving)
 +        ui_flow_pos = ui_flow_target;
++    if (ui_vflow_p != (ui_vflow ? 1.0 : 0.0))
++        ui_flow_moving = 1;                     /* the video is still shrinking into its tile, or growing back: keep drawing */
 +    if (!is->paused)
 +        ui_flow_ang = fmod(ui_flow_ang + dt * 0.9, 6.28318531);        /* about one turn every 7 seconds */
 +    lvl += ((is->paused ? 0.0f : av_clipf(is->level * 4.0f, 0.0f, 1.0f)) - lvl) * 0.25f;
@@ -5072,6 +5234,10 @@
 +            ad = fabs(d);
 +            sc = 1.0 - 0.40 * FFMIN(ad, 1.0) - 0.06 * FFMAX(FFMIN(ad, 3.0) - 1.0, 0.0);
 +            off = ui_flow_off(B, d);
++            if (ui_flow_vmode && i != q_pos) {  /* the other tiles slide out from behind the video and grow a little */
++                off *= 0.55 + 0.45 * ui_vflow_ep;
++                sc *= 0.8 + 0.2 * ui_vflow_ep;
++            }
 +            s = B * sc;
 +            tl[e] = av_clipd(d, -1.0, 1.0) * (0.45 + 1.1 * fmod(i * 0.61803398875 + 0.3, 1.0));    /* each cover turns a little differently */
 +            ui_flow_rects[e].w = (int)(s * (1.0 - 0.14 * fabs(tl[e])));         /* a turned cover is narrower */
@@ -5080,21 +5246,23 @@
 +            if (d < 0)
 +                ui_flow_rects[e].x += (int)s - ui_flow_rects[e].w;              /* the edge nearest the middle stays put */
 +            ui_flow_rects[e].y = cy - (int)(s / 2);
-+            if (ui_flow_vmode) {                /* a video keeps its own shape: fitted into the square slot, centred in it */
-+                double asp = ui_cov_aspect(q_items[i]);
++            {                                   /* a video keeps its own shape (whatever is playing): fitted into the square slot, centred in it */
++                int sw = ui_flow_rects[e].w, sh = ui_flow_rects[e].h, nw, nh;
 +
-+                if (asp > 0.0) {
-+                    int sw = ui_flow_rects[e].w, sh = ui_flow_rects[e].h;
-+                    int nw = asp >= 1.0 ? sw : (int)(sh * asp), nh = asp >= 1.0 ? (int)(sw / asp) : sh;
-+
-+                    ui_flow_rects[e].x += (sw - nw) / 2;
-+                    ui_flow_rects[e].y += (sh - nh) / 2;
-+                    ui_flow_rects[e].w = nw;
-+                    ui_flow_rects[e].h = nh;
-+                }
++                ui_flow_fit(i, sw, sh, &nw, &nh);
++                ui_flow_rects[e].x += (sw - nw) / 2;
++                ui_flow_rects[e].y += (sh - nh) / 2;
++                ui_flow_rects[e].w = nw;
++                ui_flow_rects[e].h = nh;
 +            }
-+            if (i == ci)
-+                chh = ui_flow_rects[e].h;       /* the labels go under the middle tile */
++        }
++        {                                       /* the labels and bars go under the middle picture: its height is eased between the two nearest items, so they do not jump */
++            int i0 = av_clip((int)floor(ui_flow_pos), 0, q_count - 1), i1 = FFMIN(i0 + 1, q_count - 1), pw, h0, h1;
++            double f = av_clipd(ui_flow_pos - i0, 0.0, 1.0);
++
++            ui_flow_fit(i0, (int)B, (int)B, &pw, &h0);
++            ui_flow_fit(i1, (int)B, (int)B, &pw, &h1);
++            chh = (int)(h0 * (1.0 - f) + h1 * f);
 +        }
 +        for (pass = 4; pass >= 0; pass--) {     /* then draw them, the far ones first */
 +            for (i = ci - 5; i <= ci + 5; i++) {
@@ -5108,6 +5276,8 @@
 +                s = tile.w;
 +                al = (int)(255 * av_clipd(1.6 - 0.35 * ad, 0.12, 1.0));
 +                md = (int)(255 * av_clipd(1.0 - 0.20 * FFMIN(ad, 2.0), 0.4, 1.0));
++                if (ui_flow_vmode && i != q_pos)
++                    al = (int)(al * ui_vflow_ep);       /* the other tiles fade in while the video shrinks */
 +
 +                vx0 = tile.x;                   /* the part of this cover that is not covered by a nearer one */
 +                vx1 = tile.x + tile.w;
@@ -5141,7 +5311,20 @@
 +                        SDL_RenderSetClipRect(renderer, &cut);
 +                    }
 +                }
-+                ui_flow_tile(i, &tile, (ui_flow_dragging && i == ui_flow_press) ? al / 3 : al, md, tl[e]);
++                if (ui_flow_vmode && i == q_pos && ui_live_ok) {        /* the video that plays now keeps playing in its tile */
++                    SDL_Rect lr = tile;
++                    double ep = ui_vflow_ep;
++
++                    if (ep < 1.0) {             /* on its way between the full screen and its tile */
++                        lr.x = ui_live_rect.x + (int)((tile.x - ui_live_rect.x) * ep);
++                        lr.y = ui_live_rect.y + (int)((tile.y - ui_live_rect.y) * ep);
++                        lr.w = ui_live_rect.w + (int)((tile.w - ui_live_rect.w) * ep);
++                        lr.h = ui_live_rect.h + (int)((tile.h - ui_live_rect.h) * ep);
++                    }
++                    ui_flow_quad_round(ui_live_tex, &lr, al, md, tl[e] * ep, (int)(FFMIN(lr.w, lr.h) / 11.0 * ep));
++                } else {
++                    ui_flow_tile(i, &tile, (ui_flow_dragging && i == ui_flow_press) ? al / 3 : al, md, tl[e]);
++                }
 +                if (ui_flow_vmode && i == q_pos) {      /* a small dot in the bar color marks the video that is playing */
 +                    int dd = FFMAX(tile.h / 34, 8);
 +                    SDL_Rect dot;
@@ -5150,7 +5333,7 @@
 +                    dot.h = dd;
 +                    dot.x = tile.x + dd + 6;
 +                    dot.y = tile.y + tile.h - 2 * dd - 6;
-+                    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 235 * al / 255);
++                    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, (int)(235 * al / 255 * ui_vflow_ep));
 +                    ui_pill(&dot);
 +                }
 +                if (i != ci && vw >= 48) {      /* a small, faded title under the part that shows, tilted with its cover */
@@ -5173,9 +5356,10 @@
 +
 +    ui_q_name(ci, name, 300);                   /* the name under the middle cover */
 +    ui_fit_text(name, 22, (int)(W * 0.8));
-+    ui_label_c(W / 2, cy + chh / 2 + 40, name, 22, 255, 255, 255, 255);
++    nal = ui_flow_vmode ? (int)(255 * ui_vflow_ep) : 255;       /* the labels fade in with the tiles */
++    ui_label_c(W / 2, cy + chh / 2 + 40, name, 22, 255, 255, 255, nal);
 +    snprintf(num, sizeof(num), "%d / %d", ci + 1, q_count);
-+    ui_label_c(W / 2, cy + chh / 2 + 70, num, 15, 175, 175, 175, 255);
++    ui_label_c(W / 2, cy + chh / 2 + 70, num, 15, 175, 175, 175, nal);
 +
 +    {                                           /* the bars are always shown, from the left of the window to the right */
 +        int x0 = 24, span = W - 48;             /* where the bars start, and how wide they spread */
@@ -5209,7 +5393,7 @@
 +            bar.h = 3 + (int)(amp * (maxh - 3));
 +            bar.w = bw;
 +            bar.y = mid - bar.h / 2;                    /* no baseline: centred on the middle line, like a sound recorder */
-+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 90);        /* every bar the same color, as dim as the old unplayed bars */
++            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 90 * nal / 255);   /* every bar the same color, as dim as the old unplayed bars */
 +            ui_rr_fill(&bar, bw / 2);           /* rounded top and bottom, like the seek bar */
 +        }
 +    }
@@ -5240,8 +5424,7 @@
 +            SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 110);       /* a quiet marker */
 +            ui_rr_fill(&bar, 2);
 +        }
-+        g.w = (int)(B * 0.55);
-+        g.h = g.w;
++        ui_flow_fit(ui_flow_press, (int)(B * 0.55), (int)(B * 0.55), &g.w, &g.h);     /* the picture in hand keeps its shape */
 +        g.x = ui_flow_mx - g.w / 2;
 +        g.y = av_clip(ui_flow_my - g.h / 2, 0, FFMAX(H - g.h, 0));
 +        ui_flow_tile(ui_flow_press, &g, 235, 255, 0.0);              /* the cover in hand follows the mouse */
@@ -5473,7 +5656,7 @@
      SDL_RenderPresent(renderer);
  }
  
-@@ -1494,9 +6830,11 @@
+@@ -1494,9 +7013,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -5488,7 +5671,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -2430,7 +7768,7 @@
+@@ -2430,7 +7951,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -5497,7 +5680,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +7789,24 @@
+@@ -2451,12 +7972,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -5524,7 +5707,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +8019,8 @@
+@@ -2669,7 +8202,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -5534,7 +5717,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -3111,8 +8462,10 @@
+@@ -3111,8 +8645,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -5546,7 +5729,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3221,16 +8574,444 @@
+@@ -3221,16 +8757,453 @@
      }
  }
  
@@ -5987,12 +6170,21 @@
 +        ui_mpris_tick(is);
 +        if (ui_q_autoscroll())
 +            is->force_refresh = 1;
++        if (is->paused && !is->force_refresh) {     /* paused: the picture is still, but the bars show, move and hide, so keep drawing while they are active */
++            static int64_t forced_at = 0;
++            int64_t tnow = av_gettime_relative();
++
++            if ((ui_hover || ui_drag || tnow - cursor_last_shown < CURSOR_HIDE_DELAY + 800000) && tnow - forced_at > 30000) {
++                forced_at = tnow;
++                is->force_refresh = 1;
++            }
++        }
 +        if (ui_seek_want)
 +            ui_seek_flush(is, ui_drag != 1);
          remaining_time = REFRESH_RATE;
          if (is->show_mode != SHOW_MODE_NONE && (!is->paused || is->force_refresh))
              video_refresh(is, &remaining_time);
-@@ -3266,6 +9047,482 @@
+@@ -3266,6 +9239,482 @@
  }
  
  /* handle an event sent by the GUI */
@@ -6475,7 +6667,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3276,6 +9533,13 @@
+@@ -3276,6 +9725,13 @@
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
          case SDL_KEYDOWN:
@@ -6489,7 +6681,7 @@
              if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
                  do_exit(cur_stream);
                  break;
-@@ -3283,12 +9547,24 @@
+@@ -3283,12 +9739,24 @@
              // If we don't yet have a window, skip all key events, because read_thread might still be initializing...
              if (!cur_stream->width)
                  continue;
@@ -6514,18 +6706,25 @@
              case SDLK_SPACE:
                  toggle_pause(cur_stream);
                  break;
-@@ -3320,6 +9596,10 @@
+@@ -3320,6 +9788,17 @@
              case SDLK_t:
                  stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                  break;
-+            case SDLK_l:                /* the queue view over a video: the videos of the queue as tiles */
-+                ui_vflow = !ui_vflow;
-+                cur_stream->force_refresh = 1;
++            case SDLK_l:                /* the queue view over a video (with audio it is always there): the video keeps playing in its tile */
++                if (cur_stream->video_st && !(cur_stream->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
++                    ui_vflow = !ui_vflow;
++                    ui_vflow_t = 0;
++                    ui_bd_key[0] = 0;           /* the backdrop takes its colors from the picture of this moment */
++                    ui_flow_pos = ui_flow_target = q_pos;       /* the row starts at the playing video, no gliding in */
++                    ui_flow_last_q = q_pos;
++                    ui_flow_touch = 0;
++                    cur_stream->force_refresh = 1;
++                }
 +                break;
              case SDLK_w:
                  if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
                      if (++cur_stream->vfilter_idx >= nb_vfilters)
-@@ -3344,16 +9624,17 @@
+@@ -3344,16 +9823,17 @@
                  seek_chapter(cur_stream, -1);
                  break;
              case SDLK_LEFT:
@@ -6548,7 +6747,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3383,7 +9664,25 @@
+@@ -3383,7 +9863,25 @@
                  break;
              }
              break;
@@ -6574,7 +6773,7 @@
              if (exit_on_mousedown) {
                  do_exit(cur_stream);
                  break;
-@@ -3399,11 +9698,17 @@
+@@ -3399,11 +9897,17 @@
                  }
              }
          case SDL_MOUSEMOTION:
@@ -6592,7 +6791,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +9745,13 @@
+@@ -3440,9 +9944,13 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -6606,7 +6805,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +9761,21 @@
+@@ -3452,9 +9960,21 @@
              }
              break;
          case SDL_QUIT:
@@ -6629,7 +6828,7 @@
          default:
              break;
          }
-@@ -3526,15 +9847,11 @@
+@@ -3526,15 +10046,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -6648,7 +6847,7 @@
  
      return 0;
  }
-@@ -3678,13 +9995,7 @@
+@@ -3678,13 +10194,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -6663,7 +6862,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +10011,21 @@
+@@ -3700,6 +10210,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -6685,7 +6884,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +10043,9 @@
+@@ -3717,10 +10242,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -6697,7 +6896,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3744,13 +10069,59 @@
+@@ -3744,13 +10268,59 @@
          }
      }
  

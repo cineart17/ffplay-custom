@@ -2,6 +2,17 @@
 
 Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
 
+## v22
+- Key `l`: the playing video keeps playing live in its own tile, with an animated change from and to the full-screen video.
+- Videos keep their own shape in the queue view for playlists with both audio and video, and the view stays when a video follows a song.
+- A paused player keeps responding: the bar shows when the mouse moves and hides after the hide delay.
+- The frosted glass (menus, queue panel, media info, Open, preferences) is light, with dark text.
+
+## v21
+- The sleep timer's "end of track" pauses just before the end of the item instead of going to the idle screen.
+- Key `l` shows the videos of the queue as tiles in their own shape, with a dot on the video that plays and no disc.
+- The waveform bars sit in the middle of the space between the queue view and the seek bar and grow up and down from the middle.
+
 ## Repository (after v20)
 - `scripts/build.sh` links SDL2_ttf (it was missing from the link line) and builds in `~/ffplay-custom-build`, so it cannot overwrite a working tree in `~/build`.
 - `REQUIREMENTS.md` and `scripts/install-deps.sh` list and install everything the player needs.
