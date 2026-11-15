@@ -101,3 +101,10 @@ the libraries it uses.
 
 If you share a compiled build of ffplay-custom (a GitHub release, for example), the LGPL asks you to also make the
 matching source available. This repository does that, as long as the release is built from the same commit.
+
+## Installing
+
+After `./scripts/build.sh`, run `./scripts/install.sh`. If you built somewhere else, give that folder, for example `./scripts/install.sh ~/build`.
+It puts the player and the media-controls helper in `~/.local/bin`, adds ffplay-custom to the app menu, and installs the logo
+(`assets/logo.png`) to `~/.config/ffplay-custom/logo.png`, unless you already have a logo there. Without that file the idle screen
+shows a plain round play badge instead of the logo.

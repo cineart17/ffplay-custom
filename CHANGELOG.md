@@ -2,6 +2,10 @@
 
 Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
 
+## Repository (after v22)
+- `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
+- `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
+
 ## v22
 - Key `l`: the playing video keeps playing live in its own tile, with an animated change from and to the full-screen video.
 - Videos keep their own shape in the queue view for playlists with both audio and video, and the view stays when a video follows a song.
