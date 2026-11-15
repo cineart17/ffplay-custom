@@ -1706,14 +1706,8 @@ static void ui_label_s(int x, int cy, const char *s, int px, int r, int g, int b
     ui_label(x, cy, s, px, r, g, b, a);
 }
 
-/* ---- chapters on the seek bar, the seek bar tooltip, and the window snap preview ---- */
+/* ---- chapters on the seek bar and the seek bar tooltip ---- */
 static int ui_hover_x = -1;         /* mouse x while it is over the bar strip */
-#define UI_SNAP_FULL  1
-#define UI_SNAP_LEFT  2
-#define UI_SNAP_RIGHT 3
-static int ui_snap_zone = 0;        /* where the window would snap if the mouse button were released now */
-static int ui_snapped = 0;          /* 1 while the window sits in a half-screen snap */
-static int ui_prev_w = 0, ui_prev_h = 0;    /* the size to give back when a snapped window is dragged away */
 
 static int ui_text_width(const char *s, int px);
 
@@ -1827,35 +1821,8 @@ static void ui_seek_tooltip(VideoState *is, const SDL_Rect *sk)
     ui_label_s(box.x + 14, box.y + box.h / 2, text, 16, 245, 245, 245, 255);
 }
 
-/* While the window is dragged to a screen edge: tint it and say what will happen */
-static void ui_snap_draw(void)
-{
-    SDL_Rect all, box;
-    const char *msg;
-    int w, h, tw;
-
-    if (!ui_snap_zone || !window)
-        return;
-    SDL_GetWindowSize(window, &w, &h);
-    msg = ui_snap_zone == UI_SNAP_FULL ? "Release for fullscreen" :
-          ui_snap_zone == UI_SNAP_LEFT ? "Release for the left half" : "Release for the right half";
-    all.x = 0;
-    all.y = 0;
-    all.w = w;
-    all.h = h;
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 70);
-    SDL_RenderFillRect(renderer, &all);
-    tw = ui_text_width(msg, 22) + 44;
-    box.w = tw;
-    box.h = 46;
-    box.x = (w - tw) / 2;
-    box.y = (h - box.h) / 2;
-    ui_label_s(box.x + 22, box.y + box.h / 2, msg, 22, 245, 245, 245, 255);
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-}
-
 static void ui_ctrl_draw(VideoState *is, const SDL_Rect *sk);
+static void ui_titlebar_draw(VideoState *is);
 
 static void ui_draw(VideoState *is)
 {
@@ -3747,6 +3714,7 @@ static void ui_glass_frame(VideoState *is)
         ui_flow_draw(is);
     if (is)
         ui_draw(is);
+    ui_titlebar_draw(is);                       /* on the idle screen too */
     if (ui_scene_tex) {
         SDL_SetRenderTarget(renderer, NULL);
         SDL_RenderCopy(renderer, ui_scene_tex, NULL, NULL);
@@ -3758,7 +3726,6 @@ static void ui_glass_frame(VideoState *is)
     ui_ink_dark = 1;                            /* the preferences are light glass: dark text on them */
     ui_prefs_draw();
     ui_ink_dark = 0;
-    ui_snap_draw();
     SDL_RenderPresent(renderer);
 }
 
@@ -6174,6 +6141,24 @@ static void ui_flow_title(const char *s, int px, int cx, const SDL_Rect *t, doub
     SDL_RenderGeometry(renderer, tex, v, (NS + 1) * 2, idx, NS * 6);
 }
 
+/* The dot before the title of the item that plays: the same small bar-color dot that marks the menu row under the mouse.
+   It sits just before the text that ui_flow_title draws, on the same line, tilted with the card. */
+static void ui_flow_title_dot(const char *s, int px, int cx, const SDL_Rect *t, double tilt, int al, int size)
+{
+    double kin = 1.0 - 0.16 * fabs(tilt), x = cx - ui_text_width(s, px) / 2.0 - size - 6;
+    double uc = av_clipd((x - t->x) / (double)FFMAX(t->w, 1), 0.0, 1.0);
+    double f = tilt < 0 ? 1.0 - (1.0 - kin) * uc : tilt > 0 ? kin + (1.0 - kin) * uc : 1.0;
+    SDL_Rect dot;
+
+    dot.w = FFMAX((int)(size * f), 3);
+    dot.h = dot.w;
+    dot.x = (int)x;
+    dot.y = (int)(t->y + t->h / 2.0 + t->h * f / 2.0 + 18.0 * f) - dot.h / 2;
+    SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
+                           av_clip(cfg_bar_b + 40, 0, 255), al * 235 / 255);
+    ui_pill(&dot);
+}
+
 /* ----- the shape of the whole track, read in the background -----
    Every file that plays is read once (at low priority) and measured: how loud each stretch of it is. */
 #define UI_WAVE_N 200
@@ -6548,21 +6533,12 @@ static void ui_flow_draw(VideoState *is)
                 } else {
                     ui_flow_tile(i, &tile, (ui_flow_dragging && i == ui_flow_press) ? al / 3 : al, md, tl[e]);
                 }
-                if (ui_flow_vmode && i == q_pos) {      /* a small dot in the bar color marks the video that is playing */
-                    int dd = FFMAX(tile.h / 34, 8);
-                    SDL_Rect dot;
-
-                    dot.w = dd;
-                    dot.h = dd;
-                    dot.x = tile.x + dd + 6;
-                    dot.y = tile.y + tile.h - 2 * dd - 6;
-                    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, (int)(235 * al / 255 * ui_vflow_ep));
-                    ui_pill(&dot);
-                }
                 if (i != ci && vw >= 48) {      /* a small, faded title under the part that shows, tilted with its cover */
                     ui_q_name(i, name, 300);
                     ui_fit_text(name, 15, vw);
                     ui_flow_title(name, 15, vx0 + vw / 2, &tile, tl[e], al * 55 / 100);
+                    if (i == q_pos)             /* the dot of the item that plays, before its title */
+                        ui_flow_title_dot(name, 15, vx0 + vw / 2, &tile, tl[e], al, 6);
                 }
                 SDL_RenderSetClipRect(renderer, NULL);
                 if (ui_flow_n < 16) {           /* a click on a hidden part goes to the cover in front */
@@ -6581,6 +6557,17 @@ static void ui_flow_draw(VideoState *is)
     ui_fit_text(name, 22, (int)(W * 0.8));
     nal = ui_flow_vmode ? (int)(255 * ui_vflow_ep) : 255;       /* the labels fade in with the tiles */
     ui_label_c(W / 2, cy + chh / 2 + 40, name, 22, 255, 255, 255, nal);
+    if (ci == q_pos) {                          /* the dot of the item that plays, before its title */
+        SDL_Rect pdot;
+
+        pdot.w = 8;
+        pdot.h = 8;
+        pdot.x = W / 2 - ui_text_width(name, 22) / 2 - 20;
+        pdot.y = cy + chh / 2 + 40 - 4;
+        SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
+                               av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * nal / 255));
+        ui_pill(&pdot);
+    }
     snprintf(num, sizeof(num), "%d / %d", ci + 1, q_count);
     ui_label_c(W / 2, cy + chh / 2 + 70, num, 15, 175, 175, 175, nal);
 
@@ -6869,7 +6856,7 @@ static void video_display(VideoState *is)
     }
     ui_flow_draw(is);
     ui_draw(is);
-    ui_snap_draw();
+    ui_titlebar_draw(is);
     ui_menu_stream = is;
     ui_menu_draw();
     SDL_RenderPresent(renderer);
@@ -9250,7 +9237,7 @@ static void ui_aspect_tick(VideoState *is)
         return;
     ui_aspect_due = 0;
 
-    if (is_full_screen || ui_snapped || !is->video_st || !is->ic)
+    if (is_full_screen || !is->video_st || !is->ic)
         return;
     if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)
         return;
@@ -9260,6 +9247,12 @@ static void ui_aspect_tick(VideoState *is)
     SDL_GetWindowSize(window, &w, &h);
     if (w < 260 || h <= UI_BAR_H * 3)
         return;
+    {                                           /* a window the system tiled or maximized keeps the size it was given */
+        SDL_Rect area;
+
+        if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &area) == 0 && h >= area.h - 40)
+            return;
+    }
 
     sar = av_guess_sample_aspect_ratio(is->ic, is->video_st, NULL);
     if (sar.num <= 0 || sar.den <= 0) {
@@ -9281,7 +9274,7 @@ static void ui_aspect_tick(VideoState *is)
 }
 
 /* ---- move and resize the borderless window with the mouse (not in fullscreen) ----
-   Drag the picture to move the window. Drag an edge or corner to resize it.
+   The title bar moves the window (the window manager does the move, see ui_hit_test). Drag an edge or corner to resize it.
    The size always follows the video's aspect ratio, so there are no black bars. */
 #define UI_EDGE_L 1
 #define UI_EDGE_R 2
@@ -9289,7 +9282,6 @@ static void ui_aspect_tick(VideoState *is)
 #define UI_EDGE_B 8
 
 static int ui_win_mode = 0;     /* 0 = nothing, 1 = moving, 2 = resizing */
-static int ui_win_moved = 0;    /* 1 once the mouse has moved enough to start a move */
 static int ui_win_edges = 0;    /* which edges are being dragged (UI_EDGE_*) */
 static int ui_gx0, ui_gy0;      /* mouse position on screen when the drag started */
 static int ui_wx0, ui_wy0;      /* window position when the drag started */
@@ -9418,69 +9410,164 @@ static void ui_resize_to(VideoState *is, int gx, int gy)
     SDL_SetWindowSize(window, w, h);
 }
 
-/* Mouse events for moving and resizing the window.
-   Returns 1 if the event was used here, 0 if normal handling should go on. */
-/* Which screen edge is the mouse at? Top = fullscreen, left or right = that half of the screen. */
-static int ui_snap_zone_at(int gx, int gy)
-{
-    SDL_Rect b;
+/* ---- the title bar: a translucent strip across the top of the window (windowed mode only), drawn over the picture like the seek bar ----
+   Close at the left, fullscreen at the right, the name of what plays in the middle.
+   The strip between the buttons moves the window: ui_hit_test tells SDL that it is a drag area, so the window manager
+   does the move itself. That is why dragging it to the top of the screen maximizes the window, and to the left or right
+   side tiles it, like any other window of the desktop. */
+#define UI_TB_H     40                  /* height of the strip */
+#define UI_TB_BTN   48                  /* width of each button */
+#define UI_TB_EDGE  6                   /* the top rows stay the window's resize edge */
 
-    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &b) != 0)
+static int ui_tb_on = 0;                /* 1 while the strip is drawn */
+static int ui_tb_hover = 0;             /* 0 = nothing, 1 = close, 2 = fullscreen */
+
+/* One line, w pixels thick, from (x0, y0) to (x1, y1), in the current draw color */
+static void ui_tb_line(double x0, double y0, double x1, double y1, double w)
+{
+    SDL_Vertex v[4];
+    int idx[6] = { 0, 1, 2, 1, 3, 2 }, k;
+    Uint8 cr, cg, cb, ca;
+    double dx = x1 - x0, dy = y1 - y0, len = sqrt(dx * dx + dy * dy), nx, ny;
+
+    if (len < 0.01)
+        return;
+    nx = -dy / len * w / 2.0;
+    ny = dx / len * w / 2.0;
+    SDL_GetRenderDrawColor(renderer, &cr, &cg, &cb, &ca);
+    v[0].position.x = (float)(x0 + nx);
+    v[0].position.y = (float)(y0 + ny);
+    v[1].position.x = (float)(x0 - nx);
+    v[1].position.y = (float)(y0 - ny);
+    v[2].position.x = (float)(x1 + nx);
+    v[2].position.y = (float)(y1 + ny);
+    v[3].position.x = (float)(x1 - nx);
+    v[3].position.y = (float)(y1 - ny);
+    for (k = 0; k < 4; k++) {
+        v[k].color.r = cr;
+        v[k].color.g = cg;
+        v[k].color.b = cb;
+        v[k].color.a = ca;
+        v[k].tex_coord.x = 0;
+        v[k].tex_coord.y = 0;
+    }
+    SDL_RenderGeometry(renderer, NULL, v, 4, idx, 6);
+}
+
+static void ui_titlebar_draw(VideoState *is)
+{
+    SDL_Rect row;
+    char name[300];
+    int w, h, y, a, sx, sy, cy = UI_TB_H / 2, cx1 = UI_TB_BTN / 2, cx2;
+
+    ui_tb_on = 0;
+    ui_tb_hover = 0;
+    if (!window || cursor_hidden || is_full_screen)     /* windowed mode only; hides with the cursor like the seek bar */
+        return;
+    SDL_GetWindowSize(window, &w, &h);
+    if (w < 260 || h < UI_BAR_H * 3)
+        return;
+    ui_tb_on = 1;
+    cx2 = w - UI_TB_BTN / 2;
+    {                                           /* which button is the mouse over? */
+        int mx, my;
+
+        SDL_GetMouseState(&mx, &my);
+        if (my >= UI_TB_EDGE && my < UI_TB_H)
+            ui_tb_hover = mx < UI_TB_BTN ? 1 : mx >= w - UI_TB_BTN ? 2 : 0;
+    }
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    row.x = 0;
+    row.w = w;
+    row.h = 1;
+    for (y = 0; y < UI_TB_H + 14; y++) {        /* a dark glass strip that fades out along its lower edge */
+        a = y < UI_TB_H ? 125 : 125 * (UI_TB_H + 14 - y) / 14;
+        row.y = y;
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, a);
+        SDL_RenderFillRect(renderer, &row);
+    }
+
+    if (ui_tb_hover)                            /* a soft round highlight under the button the mouse is over */
+        ui_fan(ui_tb_hover == 1 ? cx1 : cx2, cy, 16, 0, 6.28318531, 28, 255, 255, 255, 40);
+
+    SDL_SetRenderDrawColor(renderer, 245, 245, 245, ui_tb_hover == 1 ? 255 : 200);      /* close: a cross */
+    ui_tb_line(cx1 - 6, cy - 6, cx1 + 6, cy + 6, 2.0);
+    ui_tb_line(cx1 - 6, cy + 6, cx1 + 6, cy - 6, 2.0);
+
+    SDL_SetRenderDrawColor(renderer, 245, 245, 245, ui_tb_hover == 2 ? 255 : 200);
+    for (sx = -1; sx <= 1; sx += 2)
+        for (sy = -1; sy <= 1; sy += 2) {
+            if (!is_full_screen) {              /* four corners pointing out: go fullscreen */
+                ui_tb_line(cx2 + sx * 7, cy + sy * 7, cx2 + sx * 2, cy + sy * 7, 2.0);
+                ui_tb_line(cx2 + sx * 7, cy + sy * 7, cx2 + sx * 7, cy + sy * 2, 2.0);
+            } else {                            /* four corners pointing in: leave fullscreen */
+                ui_tb_line(cx2 + sx * 2, cy + sy * 2, cx2 + sx * 7, cy + sy * 2, 2.0);
+                ui_tb_line(cx2 + sx * 2, cy + sy * 2, cx2 + sx * 2, cy + sy * 7, 2.0);
+            }
+        }
+
+    if (is && q_pos >= 0 && q_pos < q_count)    /* the name of what plays, in the middle */
+        ui_q_name(q_pos, name, sizeof(name));
+    else
+        snprintf(name, sizeof(name), "ffplay-custom");
+    ui_fit_text(name, 15, w - 2 * (UI_TB_BTN + 16));
+    ui_label_c(w / 2, cy, name, 15, 235, 235, 235, 210);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+/* Tells SDL which part of the window moves it: the strip between the two buttons. The window manager then does the move. */
+static SDL_HitTestResult SDLCALL ui_hit_test(SDL_Window *win, const SDL_Point *area, void *data)
+{
+    int w, h;
+
+    if (!ui_tb_on || is_full_screen)
+        return SDL_HITTEST_NORMAL;
+    SDL_GetWindowSize(win, &w, &h);
+    if (area->y >= UI_TB_EDGE && area->y < UI_TB_H && area->x >= UI_TB_BTN && area->x < w - UI_TB_BTN)
+        return SDL_HITTEST_DRAGGABLE;
+    return SDL_HITTEST_NORMAL;
+}
+
+/* Clicks on the two buttons. Returns 1 if the click was used. */
+static int ui_titlebar_mouse(VideoState *is, SDL_Event *ev)
+{
+    int w, h, x, y, hover = 0;
+
+    if (!ui_tb_on || !window || (ev->type != SDL_MOUSEBUTTONDOWN && ev->type != SDL_MOUSEMOTION))
         return 0;
-    if (gy <= b.y + 4)
-        return UI_SNAP_FULL;
-    if (gx <= b.x + 4)
-        return UI_SNAP_LEFT;
-    if (gx >= b.x + b.w - 5)
-        return UI_SNAP_RIGHT;
-    return 0;
-}
-
-/* Do the snap: fullscreen, or the left or right half of the screen */
-static void ui_snap_apply(int zone)
-{
-    SDL_Rect b;
-
-    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &b) != 0)
-        return;
-    if (!ui_snapped) {                          /* remember the size from before the snap */
-        ui_prev_w = ui_ww0;
-        ui_prev_h = ui_wh0;
+    SDL_GetWindowSize(window, &w, &h);
+    x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
+    y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
+    if (y >= UI_TB_EDGE && y < UI_TB_H)
+        hover = x < UI_TB_BTN ? 1 : x >= w - UI_TB_BTN ? 2 : 0;
+    if (ev->type == SDL_MOUSEMOTION) {
+        if (hover != ui_tb_hover && is)
+            is->force_refresh = 1;
+        ui_tb_hover = hover;
+        return 0;                               /* the others still see the movement */
     }
-    if (zone == UI_SNAP_FULL) {
-        SDL_SetWindowPosition(window, ui_wx0, ui_wy0);      /* leaving fullscreen puts it back where the drag began */
-        is_full_screen = 1;
-        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-        return;
+    if (ev->button.button != SDL_BUTTON_LEFT || !hover)
+        return 0;
+    if (hover == 1) {
+        SDL_Event quit;
+
+        memset(&quit, 0, sizeof(quit));
+        quit.type = SDL_QUIT;
+        SDL_PushEvent(&quit);                   /* the same as closing the window any other way */
+    } else {
+        toggle_full_screen(is);
+        if (is)
+            is->force_refresh = 1;
     }
-    ui_snapped = 1;
-    SDL_SetWindowPosition(window, zone == UI_SNAP_LEFT ? b.x : b.x + b.w / 2, b.y);
-    SDL_SetWindowSize(window, b.w / 2, b.h);
+    return 1;
 }
 
-/* Dragging a snapped window gives it its old size back, held by the same spot as before */
-static void ui_unsnap(int gx, int gy)
-{
-    double fx = ui_ww0 > 0 ? (ui_gx0 - ui_wx0) / (double)ui_ww0 : 0.5;
-    int oy = ui_gy0 - ui_wy0;                   /* how far below the top of the window it was grabbed */
-
-    ui_snapped = 0;
-    if (ui_prev_w < 320 || ui_prev_h < 180)
-        return;
-    SDL_SetWindowSize(window, ui_prev_w, ui_prev_h);
-    ui_ww0 = ui_prev_w;
-    ui_wh0 = ui_prev_h;
-    ui_wx0 = gx - (int)(fx * ui_prev_w);
-    ui_wy0 = gy - oy;
-    ui_gx0 = gx;
-    ui_gy0 = gy;
-}
-
+/* Mouse events for resizing the window by its edges and corners (moving it is the title bar's job).
+   Returns 1 if the event was used here, 0 if normal handling should go on. */
 static int ui_window_mouse(VideoState *is, SDL_Event *ev)
 {
     int gx, gy;
     int edges;
-    int was_resize;
 
     if (is_full_screen) {
         if (ui_win_mode) {
@@ -9497,60 +9584,31 @@ static int ui_window_mouse(VideoState *is, SDL_Event *ev)
         if (ev->button.button != SDL_BUTTON_LEFT)
             return 0;
         edges = ui_edges_at(ev->button.x, ev->button.y);
-        /* A click on the bar area belongs to the bars */
-        if (!edges && is && ev->button.y >= is->height - UI_BAR_H)
-            return 0;
-        if (!edges && is && ui_flow_cover_at(is, ev->button.x, ev->button.y) >= 0)
-            return 0;                   /* a press on a cover belongs to the queue view, not to moving the window */
-        ui_win_mode = edges ? 2 : 1;
-        if (edges)
-            ui_snapped = 0;             /* resizing by an edge ends a snap */
-        ui_win_moved = 0;
+        if (!edges)
+            return 0;                   /* only the edges and corners are ours; a click on the picture goes on */
+        ui_win_mode = 2;
         ui_win_edges = edges;
         ui_gx0 = gx;
         ui_gy0 = gy;
         SDL_GetWindowPosition(window, &ui_wx0, &ui_wy0);
         SDL_GetWindowSize(window, &ui_ww0, &ui_wh0);
         SDL_CaptureMouse(SDL_TRUE);
-        /* Edge clicks are ours. A click on the picture also goes on to the
-           double-click-for-fullscreen code. */
-        return edges != 0;
+        return 1;
     }
     if (ev->type == SDL_MOUSEMOTION) {
-        if (ui_win_mode == 1) {
-            /* Ignore tiny movements so a double-click doesn't nudge the window */
-            if (!ui_win_moved && FFABS(gx - ui_gx0) < 4 && FFABS(gy - ui_gy0) < 4)
-                return 1;
-            if (!ui_win_moved && ui_snapped)
-                ui_unsnap(gx, gy);      /* dragging a snapped window gives it its old size back */
-            ui_win_moved = 1;
-            SDL_SetWindowPosition(window, ui_wx0 + gx - ui_gx0, ui_wy0 + gy - ui_gy0);
-            ui_snap_zone = ui_snap_zone_at(gx, gy);
-            if (is)
-                is->force_refresh = 1;
-            ui_wake();
-            return 1;
-        }
         if (ui_win_mode == 2) {
             ui_resize_to(is, gx, gy);
             ui_wake();
             return 1;
         }
-        /* Not dragging: show a resize cursor over the edges */
+        /* Not resizing: show a resize cursor over the edges */
         ui_set_cursor(ui_edges_at(ev->motion.x, ev->motion.y));
         return 0;
     }
     if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT && ui_win_mode) {
-        if (ui_win_mode == 1 && ui_snap_zone) {
-            ui_snap_apply(ui_snap_zone);        /* let go at a screen edge: snap */
-            if (is)
-                is->force_refresh = 1;
-        }
-        ui_snap_zone = 0;
-        was_resize = (ui_win_mode == 2);
         ui_win_mode = 0;
         SDL_CaptureMouse(SDL_FALSE);
-        return was_resize;
+        return 1;
     }
     return 0;
 }
@@ -9599,9 +9657,17 @@ static void ui_idle_loop(void)
                 break;
             case SDL_KEYDOWN:
                 ev.key.keysym.sym = ui_key_translate(ev.key.keysym.sym);   /* the keys chosen in settings.conf */
-                if (ui_prefs_open && ev.key.keysym.sym == SDLK_ESCAPE)
-                    ui_prefs_open = 0;
-                else if (ev.key.keysym.sym == SDLK_q || ev.key.keysym.sym == SDLK_ESCAPE)
+                if (ev.key.keysym.sym == SDLK_ESCAPE) {
+                    if (ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open) {
+                        ui_prefs_open = 0;
+                        ui_q_open = 0;
+                        ui_info_open = 0;
+                        ui_open_open = 0;
+                        ui_ctx_open = 0;
+                    } else if (is_full_screen) {
+                        toggle_full_screen(NULL);
+                    }
+                } else if (ev.key.keysym.sym == SDLK_q)
                     do_exit(NULL);
                 else if (ev.key.keysym.sym == SDLK_f)
                     toggle_full_screen(NULL);
@@ -9620,9 +9686,11 @@ static void ui_idle_loop(void)
             case SDL_MOUSEBUTTONUP:
                 if (ev.type == SDL_MOUSEBUTTONUP && ui_queue_release(&ev))
                     break;
+                if (ev.type != SDL_MOUSEBUTTONUP && ui_titlebar_mouse(NULL, &ev))
+                    break;
                 if (ev.type != SDL_MOUSEBUTTONUP && ui_menu_mouse(NULL, &ev))
                     break;
-                ui_window_mouse(NULL, &ev);     /* drag to move, edges to resize */
+                ui_window_mouse(NULL, &ev);     /* edges to resize */
                 break;
             default:
                 break;
@@ -9726,13 +9794,22 @@ static void event_loop(VideoState *cur_stream)
         switch (event.type) {
         case SDL_KEYDOWN:
             event.key.keysym.sym = ui_key_translate(event.key.keysym.sym);   /* the keys chosen in settings.conf */
-            if ((ui_menu_open || ui_prefs_open) && event.key.keysym.sym == SDLK_ESCAPE) {
-                ui_menu_open = 0;
-                ui_prefs_open = 0;
-                cur_stream->force_refresh = 1;
+            if (event.key.keysym.sym == SDLK_ESCAPE) {
+                if (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open) {
+                    ui_menu_open = 0;
+                    ui_prefs_open = 0;
+                    ui_q_open = 0;
+                    ui_info_open = 0;
+                    ui_open_open = 0;
+                    ui_ctx_open = 0;
+                    cur_stream->force_refresh = 1;
+                } else if (is_full_screen) {
+                    toggle_full_screen(cur_stream);
+                    cur_stream->force_refresh = 1;
+                }
                 break;
             }
-            if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
+            if (exit_on_keydown || event.key.keysym.sym == SDLK_q) {
                 do_exit(cur_stream);
                 break;
             }
@@ -9879,8 +9956,8 @@ static void event_loop(VideoState *cur_stream)
             ui_mouse(cur_stream, &event);
             break;
         case SDL_MOUSEBUTTONDOWN:
-            if (ui_menu_mouse(cur_stream, &event) || ui_window_mouse(cur_stream, &event) ||
-                ui_mouse(cur_stream, &event))
+            if (ui_titlebar_mouse(cur_stream, &event) || ui_menu_mouse(cur_stream, &event) ||
+                ui_window_mouse(cur_stream, &event) || ui_mouse(cur_stream, &event))
                 break;
             if (exit_on_mousedown) {
                 do_exit(cur_stream);
@@ -9898,8 +9975,8 @@ static void event_loop(VideoState *cur_stream)
             }
         case SDL_MOUSEMOTION:
             if (event.type == SDL_MOUSEMOTION &&
-                (ui_menu_mouse(cur_stream, &event) || ui_window_mouse(cur_stream, &event) ||
-                 ui_mouse(cur_stream, &event)))
+                (ui_titlebar_mouse(cur_stream, &event) || ui_menu_mouse(cur_stream, &event) ||
+                 ui_window_mouse(cur_stream, &event) || ui_mouse(cur_stream, &event)))
                 break;
             if (cursor_hidden) {
                 SDL_ShowCursor(1);
@@ -10266,6 +10343,7 @@ int main(int argc, char **argv)
             av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
             do_exit(NULL);
         }
+        SDL_SetWindowHitTest(window, ui_hit_test, NULL);        /* the title bar moves the window: the window manager does it */
     }
 
     /* Play the queue. The window stays open between files and when the queue is empty. */

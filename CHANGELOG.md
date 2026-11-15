@@ -6,6 +6,12 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v23
+- Translucent top title bar in windowed mode (hides with the seek bar), with close on the left, fullscreen on the right, centered title, and native window-manager dragging/tiling via `SDL_SetWindowHitTest`.
+- Reworked `Esc` key behaviour: closes open menus/panels or exits fullscreen instead of quitting the player.
+- Moved the currently playing indicator dot to sit right before the track/video title in both card and large-title views.
+- Installer creates an application entry and Desktop shortcut on first install.
+
 ## v22
 - Key `l`: the playing video keeps playing live in its own tile, with an animated change from and to the full-screen video.
 - Videos keep their own shape in the queue view for playlists with both audio and video, and the view stays when a video follows a song.

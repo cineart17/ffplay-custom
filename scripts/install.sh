@@ -57,3 +57,22 @@ case ":$PATH:" in
     *) echo "Note: $HOME/.local/bin is not on your PATH yet. Log out and back in once, or run: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 echo "Done."
+
+# Create application launcher and Desktop shortcut on first install
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$DESKTOP_DIR"
+cat << 'DESK' > "$DESKTOP_DIR/ffplay-custom.desktop"
+[Desktop Entry]
+Type=Application
+Name=ffplay-custom
+Comment=Custom media player based on FFmpeg and SDL2
+Exec=ffplay-custom %U
+Icon=$HOME/.config/ffplay-custom/logo.png
+Terminal=false
+Categories=AudioVideo;Player;
+DESK
+sed -i "s|\$HOME|$HOME|g" "$DESKTOP_DIR/ffplay-custom.desktop"
+if [ -d "$HOME/Desktop" ] && [ ! -f "$HOME/Desktop/ffplay-custom.desktop" ]; then
+    cp "$DESKTOP_DIR/ffplay-custom.desktop" "$HOME/Desktop/ffplay-custom.desktop"
+    chmod +x "$HOME/Desktop/ffplay-custom.desktop"
+fi
