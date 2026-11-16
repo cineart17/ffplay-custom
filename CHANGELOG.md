@@ -6,6 +6,14 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v24
+- Background playback no longer stutters: a window the window manager holds back stops waiting for the screen, and the packet queue is bigger so audio keeps flowing.
+- The window is shown once, so new items and the idle screen no longer raise it or re-center it; a tiled or maximized window keeps its size.
+- Window title is `ffplay-custom - name`; right click on the title bar opens the window manager's menu (X11).
+- Queue view: tapping the playing video's tile opens it full screen; pausing a queued video opens the view; the last picture stays when the queue ends and the player does not quit.
+- Bigger video tiles, a dark glass strip behind the seek and volume bars, a shorter title bar.
+- Video crossfade, no flash of the last picture on close, seek steps of 0.3 and 0.5 s with exact landing.
+
 ## v23
 - Translucent top title bar in windowed mode (hides with the seek bar), with close on the left, fullscreen on the right, centered title, and native window-manager dragging/tiling via `SDL_SetWindowHitTest`.
 - Reworked `Esc` key behaviour: closes open menus/panels or exits fullscreen instead of quitting the player.

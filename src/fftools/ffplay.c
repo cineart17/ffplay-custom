@@ -70,7 +70,7 @@
 const char program_name[] = "ffplay";
 const int program_birth_year = 2003;
 
-#define MAX_QUEUE_SIZE (15 * 1024 * 1024)
+#define MAX_QUEUE_SIZE (64 * 1024 * 1024)       /* big: audio keeps flowing while the picture is late */
 #define MIN_FRAMES 25
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
 #define EXTERNAL_CLOCK_MAX_FRAMES 10
@@ -297,6 +297,12 @@ typedef struct VideoState {
     double max_frame_duration;      // maximum duration of a frame - above this, we consider the jump a timestamp discontinuity
     struct SwsContext *sub_convert_ctx;
     int eof;
+    int seek_precise;           /* the seek in progress must land exactly on its time */
+    int prec_v, prec_a;         /* 1 = pictures / sound before prec_target are still being skipped */
+    int prec_ser_v, prec_ser_a; /* the queue serial those frames belong to */
+    double prec_target;         /* seconds */
+    volatile int ui_hold;       /* the reader saw the end of the last video: pause on its last picture */
+    int ui_held;                /* 0 = not held, 1 = paused on the last picture, 2 = restarting */
 
     char *filename;
     int width, height, xleft, ytop;
@@ -964,6 +970,7 @@ static void ui_flow_draw(VideoState *is);
 static int ui_flow_wants_redraw(VideoState *is);
 static int ui_flow_video(VideoState *is);
 static void ui_live_grab(VideoState *is, const SDL_Rect *rect, int flip);
+static void ui_xf_video_draw(VideoState *is);
 static double ui_vflow_p = 0.0;         /* 0 to 1: how far the playing video has shrunk into its tile (it animates when L is pressed) */
 static double ui_vflow_ep = 0.0;        /* the same, eased: slow, quick, slow */
 static int64_t ui_vflow_t = 0;          /* when the animation was last stepped */
@@ -1040,7 +1047,10 @@ static void video_image_display(VideoState *is)
     ui_cover_backdrop(is, vp->flip_v);      /* behind the cover art: its own colors, glowing */
     ui_live_grab(is, &rect, vp->flip_v);    /* over a video: copy the frame, the tile shows it */
     if (!ui_has_cover(is) && !ui_flow_video(is))    /* a cover is drawn by the queue view instead (ui_flow_draw) */
+    {
         SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
+        ui_xf_video_draw(is);                   /* the next video fades in over the end of this one */
+    }
     set_sdl_yuv_conversion_mode(NULL);
     if (sp) {
 #if USE_ONEPASS_SUBTITLE_RENDER
@@ -1530,6 +1540,14 @@ static void do_exit(VideoState *is)
     if (is) {
         stream_close(is);
     }
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    if (window && (SDL_GetWindowFlags(window) & SDL_WINDOW_SHOWN)) {
+        SDL_SetWindowOpacity(window, 0.0f);     /* the window manager's closing effect then has nothing to show */
+        SDL_PumpEvents();
+        SDL_Delay(70);
+        SDL_HideWindow(window);
+    }
+#endif
     if (renderer)
         SDL_DestroyRenderer(renderer);
     if (window)
@@ -1564,6 +1582,8 @@ static void set_default_window_size(int width, int height, AVRational sar)
 #define UI_BAR_H 28
 #define UI_ON(is) ((is)->width >= 260 && (is)->height >= UI_BAR_H * 3)
 
+static int ui_shown_once = 0;   /* the window is shown once; later items leave its place and workspace alone */
+
 static int video_open(VideoState *is)
 {
     int w,h;
@@ -1575,11 +1595,29 @@ static int video_open(VideoState *is)
         window_title = input_filename;
     SDL_SetWindowTitle(window, window_title);
 
-    SDL_SetWindowSize(window, w, h);
-    SDL_SetWindowPosition(window, screen_left, screen_top);
-    if (is_full_screen)
-        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-    SDL_ShowWindow(window);
+    {
+        int tiled = 0, cw = 0, ch = 0;
+        SDL_Rect ub;
+
+        if (ui_shown_once && !is_full_screen && SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &ub) == 0) {
+            SDL_GetWindowSize(window, &cw, &ch);
+            tiled = ch >= ub.h - 8 || cw >= ub.w - 8;       /* maximized or tiled by the window manager: its size stays */
+        }
+        if (tiled) {
+            w = cw;
+            h = ch;
+        } else {
+            SDL_SetWindowSize(window, w, h);
+        }
+        if (!ui_shown_once)
+            SDL_SetWindowPosition(window, screen_left, screen_top);
+        if (is_full_screen)
+            SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        if (!ui_shown_once) {
+            SDL_ShowWindow(window);         /* only the first time: showing it again would raise it, even from another workspace */
+            ui_shown_once = 1;
+        }
+    }
 
     is->width  = w;
     is->height = h;
@@ -1592,6 +1630,8 @@ static int video_open(VideoState *is)
 
 static double get_master_clock(VideoState *is);
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
+#define UI_PRECISE_SEEK 1                /* 0 = seek to the nearest key frame, as before */
+static int ui_precise_next = 0;         /* 1 = the next seek must land exactly on its time */
 
 static int ui_hover = 0;   /* 1 = mouse is over the bar strip */
 static int ui_drag = 0;               /* 0 = none, 1 = seek bar, 2 = volume bar */
@@ -1619,9 +1659,56 @@ static int ui_set_color(SDL_Renderer *rd, int r, int g, int b, int a)
 }
 #define SDL_SetRenderDrawColor(rd, r, g, b, a) ui_set_color(rd, r, g, b, a)
 
+/* ---- showing the picture without waiting for the window manager ----
+   A window that is not on screen (another workspace, the Multitasking view) can have its frames held back for a long
+   time. Waiting for them stops the main loop, so pictures pile up, the reader stops reading sound too, and playback
+   stutters until the window is seen again. So a present that takes long switches vsync off; it comes back as soon as
+   the window is seen again. */
+static int ui_vsync_on = 1;
+static int ui_present_slow = 0;
+
+static void ui_vsync_set(int on)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    if (renderer && on != ui_vsync_on) {
+        SDL_RenderSetVSync(renderer, on);
+        ui_vsync_on = on;
+    }
+#endif
+    ui_present_slow = 0;
+}
+
+static void ui_present(void)
+{
+    int64_t t0 = av_gettime_relative(), dt;
+
+    SDL_RenderPresent(renderer);
+    dt = av_gettime_relative() - t0;
+    if (dt > 100000) {
+        if (ui_vsync_on)
+            av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the window manager held a frame for %d ms (window in the background?): not waiting for the screen until the window is seen again\n", (int)(dt / 1000));
+        ui_vsync_set(0);
+    }
+}
+
+/* Is the window out of sight for sure (minimized or hidden)? Then nothing is drawn. */
+static int ui_win_unseen(void)
+{
+    static int was = 0;
+    int now = window && (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN));
+
+    if (now != was) {
+        was = now;
+        av_log(NULL, AV_LOG_WARNING, "ffplay-custom: window %s\n", now ? "hidden or minimized: not drawing, the pictures still go by" : "on screen again");
+    }
+    return now;
+}
+
 /* Show the cursor and bar again and restart the hide timer */
 static void ui_wake(void)
 {
+    if (!ui_vsync_on)
+        ui_vsync_set(1);                /* the mouse moved: the window is in sight again */
     if (cursor_hidden) {
         SDL_ShowCursor(1);
         cursor_hidden = 0;
@@ -1861,6 +1948,20 @@ static void ui_draw(VideoState *is)
     /* No background panel: the bars float directly over the video */
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
+    {                                           /* a dark glass strip as small as it can be: the bars stay visible on any picture */
+        SDL_Rect row;
+        int y, top = sk.y - 12, a;
+
+        row.x = 0;
+        row.w = is->width;
+        row.h = 1;
+        for (y = top - 10; y < is->height; y++) {
+            a = y < top ? 125 * (y - (top - 10)) / 10 : 125;
+            row.y = y;
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, a);
+            SDL_RenderFillRect(renderer, &row);
+        }
+    }
     ui_seek_bar(is, &sk, frac);
     ui_ctrl_draw(is, &sk);
     ui_bar(&vo, vfrac);
@@ -1888,7 +1989,7 @@ static void ui_seek_flush(VideoState *is, int force)
     if (!force && now < ui_seek_next)
         return;
     ui_seek_want = 0;
-    ui_seek_next = now + 100000;        /* about 10 seeks a second while dragging */
+    ui_seek_next = now + 50000;         /* about 20 seeks a second while dragging */
     if (seek_by_bytes || is->ic->duration <= 0) {
         int64_t size = avio_size(is->ic->pb);
 
@@ -1899,6 +2000,7 @@ static void ui_seek_flush(VideoState *is, int force)
 
         if (is->ic->start_time != AV_NOPTS_VALUE)
             ts += is->ic->start_time;
+        ui_precise_next = force;        /* the last seek of a drag lands exactly */
         stream_seek(is, ts, 0, 0);
     }
 }
@@ -1990,6 +2092,8 @@ static void ui_menu_draw(void);
 
 /* ---- play queue, other launches, file dialogs and the menu ---- */
 #include <dirent.h>
+#include <SDL_syswm.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -3526,7 +3630,7 @@ static const struct { const char *name; int r, g, b; } ui_colors[] = {
     { "Gray", 150, 150, 150 }
 };
 #define UI_NCOLORS 7
-static const int ui_seek_steps[] = { 1, 2, 3, 5, 10, 15, 30 };
+static const av_unused int ui_seek_steps[] = { 1, 2, 3, 5, 10, 15, 30 };
 static const int ui_vol_steps[] = { 1, 2, 4, 8, 16 };
 static const int ui_hide_steps[] = { 1, 2, 3, 4, 5, 8, 10, 15, 30 };
 
@@ -3584,7 +3688,16 @@ static void ui_pref_change(int row, int dir)
     int i;
 
     switch (row) {
-    case 0: cfg_seek = ui_step_list(ui_seek_steps, 7, cfg_seek, dir); break;
+    case 0: {
+        static const double st[] = { 0.3, 0.5, 1, 2, 3, 5, 10, 15, 30 };
+        int b = 0, k;
+
+        for (k = 1; k < 9; k++)
+            if (fabs(st[k] - cfg_seek) < fabs(st[b] - cfg_seek))
+                b = k;
+        cfg_seek = st[av_clip(b + dir, 0, 8)];
+        break;
+    }
     case 1: cfg_vol_step = ui_step_list(ui_vol_steps, 5, cfg_vol_step, dir); break;
     case 2:
         cfg_hide_delay = (int64_t)ui_step_list(ui_hide_steps, 9, cfg_hide_delay / 1000000.0, dir) * 1000000;
@@ -3726,7 +3839,7 @@ static void ui_glass_frame(VideoState *is)
     ui_ink_dark = 1;                            /* the preferences are light glass: dark text on them */
     ui_prefs_draw();
     ui_ink_dark = 0;
-    SDL_RenderPresent(renderer);
+    ui_present();
 }
 
 /* ---- the big logo on the idle screen ---- */
@@ -5800,6 +5913,39 @@ static int ui_flow_video(VideoState *is)
            q_count > 0 && q_pos >= 0 && q_pos < q_count;
 }
 
+static void toggle_full_screen(VideoState *is);
+
+/* The queue view over a video: on or off, with the same start every time */
+static int ui_vflow_auto = 0;           /* 1 = a pause opened the queue view, so playing again closes it */
+
+static void ui_vflow_set(VideoState *is, int on)
+{
+    if (!!ui_vflow == !!on)
+        return;
+    ui_vflow = on;
+    ui_vflow_t = 0;
+    ui_bd_key[0] = 0;                   /* the backdrop takes its colors from the picture of this moment */
+    ui_flow_pos = ui_flow_target = q_pos;       /* the row starts at the playing video, no gliding in */
+    ui_flow_last_q = q_pos;
+    ui_flow_touch = 0;
+    is->force_refresh = 1;
+}
+
+/* A tap on the tile of the video that plays: it opens full screen and plays (1 = the window goes full screen, 0 = it only fills the window) */
+#define UI_TILE_TAP_FULLSCREEN 1
+
+static void ui_tile_open(VideoState *is)
+{
+    if (is->paused)
+        toggle_pause(is);
+    ui_vflow_auto = 0;
+    ui_vflow_set(is, 0);
+#if UI_TILE_TAP_FULLSCREEN
+    if (!is_full_screen)
+        toggle_full_screen(is);
+#endif
+}
+
 static int ui_flow_on(VideoState *is)
 {
     return (is && is->audio_st && q_count > 0 && q_pos >= 0 && q_pos < q_count &&
@@ -6420,10 +6566,16 @@ static void ui_flow_draw(VideoState *is)
     }
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    B = ui_flow_vmode ? FFMIN(W * 0.36, H * 0.50) : FFMIN(W * 0.30, H * 0.44);     /* wide tiles need more room */
+    {                                           /* video tiles: as big as the window allows (a wide picture fills the width, a tall one the height) */
+        double ar = 1.0;
+
+        if (ui_flow_vmode && is->video_st && is->video_st->codecpar->height > 0)
+            ar = av_clipd((double)is->video_st->codecpar->width / is->video_st->codecpar->height, 1.0, 1.8);
+        B = ui_flow_vmode ? FFMIN(W * 0.42, H * 0.50 * ar) : FFMIN(W * 0.30, H * 0.44);
+    }
     cx = W / 2 - (ui_flow_vmode ? 0 : (int)(B * 0.12));
     chh = (int)B;                               /* the height of the middle tile */
-    cy = (int)(H * 0.40);
+    cy = (int)(H * (ui_flow_vmode ? 0.38 : 0.40));
     ui_flow_n = 0;
     ci = av_clip((int)(ui_flow_pos + 0.5), 0, q_count - 1);
 
@@ -6722,7 +6874,10 @@ static int ui_flow_release(VideoState *is, int x, int y)
         }
         ui_flow_drop = -1;
     } else if (idx == q_pos) {
-        toggle_pause(is);
+        if (ui_flow_video(is))
+            ui_tile_open(is);                   /* a video: its tile opens it full screen */
+        else
+            toggle_pause(is);
     } else if (idx < q_count) {
         q_forced = idx;
         ui_end_current(is);
@@ -6837,6 +6992,9 @@ static void video_display(VideoState *is)
     if (!is->width)
         video_open(is);
 
+    if (ui_win_unseen())
+        return;                     /* minimized or hidden: nothing to draw */
+
     if (ui_menu_open || ui_prefs_open) {
         ui_glass_frame(is);         /* frosted glass over the blurred picture */
         return;
@@ -6859,7 +7017,7 @@ static void video_display(VideoState *is)
     ui_titlebar_draw(is);
     ui_menu_stream = is;
     ui_menu_draw();
-    SDL_RenderPresent(renderer);
+    ui_present();
 }
 
 static double get_clock(Clock *c)
@@ -6962,9 +7120,13 @@ static void check_external_clock_speed(VideoState *is) {
 /* seek in the stream */
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
 {
+    int prec = UI_PRECISE_SEEK ? ui_precise_next : 0;
+
+    ui_precise_next = 0;
     if (!is->seek_req) {
         is->seek_pos = pos;
         is->seek_rel = rel;
+        is->seek_precise = prec && !by_bytes;
         is->seek_flags &= ~AVSEEK_FLAG_BYTE;
         if (by_bytes)
             is->seek_flags |= AVSEEK_FLAG_BYTE;
@@ -7265,6 +7427,30 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     return 0;
 }
 
+/* After an exact seek: pictures and sound before the wanted time are thrown away */
+static int ui_prec_skip_v(VideoState *is, double pts)
+{
+    if (!is->prec_v || is->viddec.pkt_serial != is->prec_ser_v || isnan(pts))
+        return 0;
+    if (pts + 0.001 < is->prec_target)
+        return 1;
+    is->prec_v = 0;
+    return 0;
+}
+
+static int ui_prec_skip_a(VideoState *is, AVFrame *frame)
+{
+    double end;
+
+    if (!is->prec_a || is->auddec.pkt_serial != is->prec_ser_a || frame->pts == AV_NOPTS_VALUE || frame->sample_rate <= 0)
+        return 0;
+    end = (frame->pts + frame->nb_samples) / (double)frame->sample_rate;
+    if (end <= is->prec_target)
+        return 1;
+    is->prec_a = 0;
+    return 0;
+}
+
 static int get_video_frame(VideoState *is, AVFrame *frame)
 {
     int got_picture;
@@ -7279,6 +7465,11 @@ static int get_video_frame(VideoState *is, AVFrame *frame)
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
 
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
+
+        if (ui_prec_skip_v(is, dpts)) {
+            av_frame_unref(frame);
+            return 0;
+        }
 
         if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
             if (frame->pts != AV_NOPTS_VALUE) {
@@ -7548,6 +7739,11 @@ static int audio_thread(void *arg)
     do {
         if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
             goto the_end;
+
+        if (got_frame && ui_prec_skip_a(is, frame)) {
+            av_frame_unref(frame);
+            got_frame = 0;
+        }
 
         if (got_frame) {
                 tb = (AVRational){1, frame->sample_rate};
@@ -8255,6 +8451,13 @@ static int is_realtime(AVFormatContext *s)
 }
 
 /* this thread gets the stream from the disk or the network */
+/* The end of the last video of the queue, when the player does not quit: it stays on its last picture instead */
+static int ui_hold_last_wanted(VideoState *is)
+{
+    return !cfg_quit_when_done && is != xf_stream && is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+           q_count > 0 && q_pos >= 0 && q_pos < q_count && q_forced < 0 && queue_next() >= q_count;
+}
+
 static int read_thread(void *arg)
 {
     VideoState *is = arg;
@@ -8467,6 +8670,10 @@ static int read_thread(void *arg)
             int64_t seek_target = is->seek_pos;
             int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
             int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
+            if (is->seek_precise && !(is->seek_flags & AVSEEK_FLAG_BYTE)) {
+                seek_min = INT64_MIN;           /* exact landing: start at the key frame before the time, */
+                seek_max = seek_target;         /* the pictures and sound before it are skipped */
+            }
 // FIXME the +-2 is due to rounding being not done in the correct direction in generation
 //      of the seek_pos/seek_rel variables
 
@@ -8486,6 +8693,19 @@ static int read_thread(void *arg)
                 } else {
                    set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                 }
+                is->prec_v = is->prec_a = 0;
+                if (is->seek_precise && !(is->seek_flags & AVSEEK_FLAG_BYTE)) {
+                    is->prec_target = seek_target / (double)AV_TIME_BASE;
+                    if (is->video_stream >= 0 && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+                        is->prec_ser_v = is->videoq.serial;
+                        is->prec_v = 1;
+                    }
+                    if (is->audio_stream >= 0) {
+                        is->prec_ser_a = is->audioq.serial;
+                        is->prec_a = 1;
+                    }
+                }
+
             }
             is->seek_req = 0;
             is->queue_attachments_req = 1;
@@ -8521,8 +8741,13 @@ static int read_thread(void *arg)
             if (loop != 1 && (!loop || --loop)) {
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
             } else if (autoexit) {
-                ret = AVERROR_EOF;
-                goto fail;
+                if (ui_hold_last_wanted(is)) {
+                    if (!is->ui_held)
+                        is->ui_hold = 1;        /* the main loop pauses on the last picture */
+                } else {
+                    ret = AVERROR_EOF;
+                    goto fail;
+                }
             }
         }
         ret = av_read_frame(ic, pkt);
@@ -8750,8 +8975,41 @@ static void ui_aspect_tick(VideoState *is);
 /* ----- the sleep timer and the crossfade: both are checked on every turn of the event loop ----- */
 
 /* Close the next item if it was started early */
+static double ui_xf_t = 0.0;            /* 0 to 1: how far the crossfade has gone */
+
+/* The picture of the next video, drawn over the end of this one, a little stronger each moment */
+static void ui_xf_video_draw(VideoState *is)
+{
+    VideoState *xf = xf_stream;
+    Frame *np;
+    SDL_Rect r;
+
+    if (!xf || ui_xf_t <= 0.0 || !xf->video_st || (xf->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
+        xf->pictq.size <= 0 || ui_flow_video(is) || ui_has_cover(is))
+        return;
+    np = frame_queue_peek_last(&xf->pictq);
+    if (!np->frame || !np->frame->width || !np->width || !np->height)
+        return;
+    calculate_display_rect(&r, is->xleft, is->ytop, is->width, is->height, np->width, np->height, np->sar);
+    set_sdl_yuv_conversion_mode(np->frame);
+    if (!np->uploaded) {
+        if (upload_texture(&xf->vid_texture, np->frame) < 0) {
+            set_sdl_yuv_conversion_mode(NULL);
+            return;
+        }
+        np->uploaded = 1;
+        np->flip_v = np->frame->linesize[0] < 0;
+    }
+    SDL_SetTextureBlendMode(xf->vid_texture, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureAlphaMod(xf->vid_texture, (Uint8)(255.0 * av_clipd(ui_xf_t, 0.0, 1.0)));
+    SDL_RenderCopyEx(renderer, xf->vid_texture, NULL, &r, 0, NULL, np->flip_v ? SDL_FLIP_VERTICAL : 0);
+    SDL_SetTextureAlphaMod(xf->vid_texture, 255);
+    set_sdl_yuv_conversion_mode(NULL);
+}
+
 static void ui_xf_abort(void)
 {
+    ui_xf_t = 0.0;
     if (xf_stream) {
         stream_close(xf_stream);
         xf_stream = NULL;
@@ -8834,6 +9092,7 @@ static void ui_xfade_tick(VideoState *is)
         t = av_clipd(1.0 - rem / n, 0.0, 1.0);
         is->xf_gain = (float)cos(t * M_PI / 2);     /* equal power: the total loudness stays level */
         xf->xf_gain = (float)sin(t * M_PI / 2);
+        ui_xf_t = t;                            /* the picture fades in the same way */
         xf->audio_volume = is->audio_volume;
         xf->muted = is->muted;
         if (xf->paused != is->paused)
@@ -8866,6 +9125,7 @@ static void ui_xfade_tick(VideoState *is)
     }
     xf->audio_volume = is->audio_volume;
     xf->muted = is->muted;
+    ui_xf_t = 0.0;
     xf_stream = xf;
     xf_name = q_items[next];
 }
@@ -9160,6 +9420,51 @@ static void ui_mpris_tick(VideoState *is)
     }
 }
 
+/* A pause opens the queue view over a video that is part of a queue; playing again closes it. The last picture of the
+   last video stays on screen, paused, when the queue ends and the player does not quit. */
+static void ui_pause_tick(VideoState *is)
+{
+    static int seen = 0;
+    static int64_t unpaused_at = 0;
+    int vid = is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC);
+    int64_t now = av_gettime_relative();
+
+    if (is->ui_hold) {
+        if (!is->ui_held) {
+            if (!is->paused)
+                toggle_pause(is);
+            is->ui_held = 1;
+            is->force_refresh = 1;
+        } else if (is->ui_held == 1 && !is->paused) {      /* play was pressed on the last picture: from the start */
+            is->ui_held = 2;
+            is->ui_hold = 0;
+            stream_seek(is, is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0, 0, 0);
+        }
+    } else if (is->ui_held == 2 && !is->seek_req && !is->eof) {
+        is->ui_held = 0;
+    }
+    if (is->paused && !seen) {
+        seen = 1;
+        if (vid && q_count >= 2 && q_pos >= 0 && !ui_vflow) {
+            ui_vflow_set(is, 1);
+            ui_vflow_auto = 1;
+        }
+    } else if (!is->paused && !is->step) {
+        if (seen && !unpaused_at)
+            unpaused_at = now;
+        if (seen && now - unpaused_at > 250000) {          /* playing for a moment (a seek while paused flickers) */
+            seen = 0;
+            unpaused_at = 0;
+            if (ui_vflow_auto) {
+                ui_vflow_auto = 0;
+                ui_vflow_set(is, 0);
+            }
+        }
+    } else {
+        unpaused_at = 0;
+    }
+}
+
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
@@ -9176,6 +9481,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         ui_power_tick(is);
         ui_sleep_tick(is);
         ui_xfade_tick(is);
+        ui_pause_tick(is);
         ui_cover_tick(is);
         ui_mpris_tick(is);
         if (ui_q_autoscroll())
@@ -9415,9 +9721,9 @@ static void ui_resize_to(VideoState *is, int gx, int gy)
    The strip between the buttons moves the window: ui_hit_test tells SDL that it is a drag area, so the window manager
    does the move itself. That is why dragging it to the top of the screen maximizes the window, and to the left or right
    side tiles it, like any other window of the desktop. */
-#define UI_TB_H     40                  /* height of the strip */
-#define UI_TB_BTN   48                  /* width of each button */
-#define UI_TB_EDGE  6                   /* the top rows stay the window's resize edge */
+#define UI_TB_H     30                  /* height of the strip */
+#define UI_TB_BTN   40                  /* width of each button */
+#define UI_TB_EDGE  5                   /* the top rows stay the window's resize edge */
 
 static int ui_tb_on = 0;                /* 1 while the strip is drawn */
 static int ui_tb_hover = 0;             /* 0 = nothing, 1 = close, 2 = fullscreen */
@@ -9480,26 +9786,26 @@ static void ui_titlebar_draw(VideoState *is)
     row.x = 0;
     row.w = w;
     row.h = 1;
-    for (y = 0; y < UI_TB_H + 14; y++) {        /* a dark glass strip that fades out along its lower edge */
-        a = y < UI_TB_H ? 125 : 125 * (UI_TB_H + 14 - y) / 14;
+    for (y = 0; y < UI_TB_H + 10; y++) {        /* a dark glass strip that fades out along its lower edge */
+        a = y < UI_TB_H ? 125 : 125 * (UI_TB_H + 10 - y) / 10;
         row.y = y;
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, a);
         SDL_RenderFillRect(renderer, &row);
     }
 
     if (ui_tb_hover)                            /* a soft round highlight under the button the mouse is over */
-        ui_fan(ui_tb_hover == 1 ? cx1 : cx2, cy, 16, 0, 6.28318531, 28, 255, 255, 255, 40);
+        ui_fan(ui_tb_hover == 1 ? cx1 : cx2, cy, 12, 0, 6.28318531, 28, 255, 255, 255, 40);
 
     SDL_SetRenderDrawColor(renderer, 245, 245, 245, ui_tb_hover == 1 ? 255 : 200);      /* close: a cross */
-    ui_tb_line(cx1 - 6, cy - 6, cx1 + 6, cy + 6, 2.0);
-    ui_tb_line(cx1 - 6, cy + 6, cx1 + 6, cy - 6, 2.0);
+    ui_tb_line(cx1 - 5, cy - 5, cx1 + 5, cy + 5, 1.8);
+    ui_tb_line(cx1 - 5, cy + 5, cx1 + 5, cy - 5, 1.8);
 
     SDL_SetRenderDrawColor(renderer, 245, 245, 245, ui_tb_hover == 2 ? 255 : 200);
     for (sx = -1; sx <= 1; sx += 2)
         for (sy = -1; sy <= 1; sy += 2) {
             if (!is_full_screen) {              /* four corners pointing out: go fullscreen */
-                ui_tb_line(cx2 + sx * 7, cy + sy * 7, cx2 + sx * 2, cy + sy * 7, 2.0);
-                ui_tb_line(cx2 + sx * 7, cy + sy * 7, cx2 + sx * 7, cy + sy * 2, 2.0);
+                ui_tb_line(cx2 + sx * 6, cy + sy * 6, cx2 + sx * 2, cy + sy * 6, 1.8);
+                ui_tb_line(cx2 + sx * 6, cy + sy * 6, cx2 + sx * 6, cy + sy * 2, 1.8);
             } else {                            /* four corners pointing in: leave fullscreen */
                 ui_tb_line(cx2 + sx * 2, cy + sy * 2, cx2 + sx * 7, cy + sy * 2, 2.0);
                 ui_tb_line(cx2 + sx * 2, cy + sy * 2, cx2 + sx * 2, cy + sy * 7, 2.0);
@@ -9510,8 +9816,8 @@ static void ui_titlebar_draw(VideoState *is)
         ui_q_name(q_pos, name, sizeof(name));
     else
         snprintf(name, sizeof(name), "ffplay-custom");
-    ui_fit_text(name, 15, w - 2 * (UI_TB_BTN + 16));
-    ui_label_c(w / 2, cy, name, 15, 235, 235, 235, 210);
+    ui_fit_text(name, 14, w - 2 * (UI_TB_BTN + 16));
+    ui_label_c(w / 2, cy, name, 14, 235, 235, 235, 210);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 }
 
@@ -9526,6 +9832,62 @@ static SDL_HitTestResult SDLCALL ui_hit_test(SDL_Window *win, const SDL_Point *a
     if (area->y >= UI_TB_EDGE && area->y < UI_TB_H && area->x >= UI_TB_BTN && area->x < w - UI_TB_BTN)
         return SDL_HITTEST_DRAGGABLE;
     return SDL_HITTEST_NORMAL;
+}
+
+/* The window manager's own window menu (always on top, show on all workspaces, move to workspace, move, resize,
+   maximize, minimize, close) at the mouse. X11 sessions: the window manager is asked with _GTK_SHOW_WINDOW_MENU. */
+typedef struct {
+    int type;
+    unsigned long serial;
+    int send_event;
+    void *display;
+    unsigned long window;
+    unsigned long message_type;
+    int format;
+    long l[5];
+} UiXClientMsg;
+
+static void ui_wm_menu(void)
+{
+    SDL_SysWMinfo info;
+    static void *xlib = NULL;
+    static unsigned long (*x_atom)(void *, const char *, int);
+    static unsigned long (*x_root)(void *);
+    static int (*x_send)(void *, unsigned long, int, long, void *);
+    static int (*x_flush)(void *);
+    union { UiXClientMsg m; long pad[24]; } ev;
+    int gx, gy;
+
+    SDL_VERSION(&info.version);
+    if (!window || !SDL_GetWindowWMInfo(window, &info))
+        return;
+    if (info.subsystem != SDL_SYSWM_X11) {
+        av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the window menu is only available on X11 sessions\n");
+        return;
+    }
+    if (!xlib) {
+        xlib = dlopen("libX11.so.6", RTLD_LAZY);
+        if (xlib) {
+            *(void **)&x_atom = dlsym(xlib, "XInternAtom");
+            *(void **)&x_root = dlsym(xlib, "XDefaultRootWindow");
+            *(void **)&x_send = dlsym(xlib, "XSendEvent");
+            *(void **)&x_flush = dlsym(xlib, "XFlush");
+        }
+    }
+    if (!x_atom || !x_root || !x_send || !x_flush)
+        return;
+    SDL_GetGlobalMouseState(&gx, &gy);
+    memset(&ev, 0, sizeof(ev));
+    ev.m.type = 33;                             /* ClientMessage */
+    ev.m.display = info.info.x11.display;
+    ev.m.window = info.info.x11.window;
+    ev.m.message_type = x_atom(info.info.x11.display, "_GTK_SHOW_WINDOW_MENU", 0);
+    ev.m.format = 32;
+    ev.m.l[0] = 0;                              /* the pointer device */
+    ev.m.l[1] = gx;
+    ev.m.l[2] = gy;
+    x_send(info.info.x11.display, x_root(info.info.x11.display), 0, (1L << 20) | (1L << 19), &ev);   /* SubstructureRedirect | SubstructureNotify */
+    x_flush(info.info.x11.display);
 }
 
 /* Clicks on the two buttons. Returns 1 if the click was used. */
@@ -9545,6 +9907,10 @@ static int ui_titlebar_mouse(VideoState *is, SDL_Event *ev)
             is->force_refresh = 1;
         ui_tb_hover = hover;
         return 0;                               /* the others still see the movement */
+    }
+    if (ev->button.button == SDL_BUTTON_RIGHT && y < UI_TB_H) {
+        ui_wm_menu();                           /* right click on the title bar: the window manager's menu */
+        return 1;
     }
     if (ev->button.button != SDL_BUTTON_LEFT || !hover)
         return 0;
@@ -9622,11 +9988,12 @@ static void ui_idle_loop(void)
         do_exit(NULL);              /* no window to show (-nodisp) */
 
     /* The window starts hidden, so show it. Keep its size if it was already open. */
-    if (!SDL_GetWindowFlags(window) || !(SDL_GetWindowFlags(window) & SDL_WINDOW_SHOWN)) {
+    if (!ui_shown_once && (!SDL_GetWindowFlags(window) || !(SDL_GetWindowFlags(window) & SDL_WINDOW_SHOWN))) {
         SDL_SetWindowTitle(window, "ffplay-custom");
         if (!is_full_screen)
             SDL_SetWindowSize(window, 960, 540);
         SDL_ShowWindow(window);
+        ui_shown_once = 1;
         if (is_full_screen)
             SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
@@ -9634,6 +10001,7 @@ static void ui_idle_loop(void)
         SDL_ShowCursor(1);
         cursor_hidden = 0;
     }
+    SDL_SetWindowTitle(window, "ffplay-custom");      /* the idle screen has no item name */
     ui_idle = 1;
     ui_menu_open = 0;
     ui_menu_hover = -1;
@@ -9729,6 +10097,7 @@ static void ui_seek_relative(VideoState *is, double incr)
         pos += incr;
         if (is->ic->start_time != AV_NOPTS_VALUE && pos < is->ic->start_time / (double)AV_TIME_BASE)
             pos = is->ic->start_time / (double)AV_TIME_BASE;
+        ui_precise_next = 1;
         stream_seek(is, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
     }
 }
@@ -9868,6 +10237,7 @@ static void event_loop(VideoState *cur_stream)
             case SDLK_l:                /* the queue view over a video (with audio it is always there): the video keeps playing in its tile */
                 if (cur_stream->video_st && !(cur_stream->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
                     ui_vflow = !ui_vflow;
+                    ui_vflow_auto = 0;          /* L was pressed: it stays until L is pressed again */
                     ui_vflow_t = 0;
                     ui_bd_key[0] = 0;           /* the backdrop takes its colors from the picture of this moment */
                     ui_flow_pos = ui_flow_target = q_pos;       /* the row starts at the playing video, no gliding in */
@@ -9933,6 +10303,7 @@ static void event_loop(VideoState *cur_stream)
                         pos += incr;
                         if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE)
                             pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
+                        ui_precise_next = 1;
                         stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
                     }
                 break;
@@ -10021,6 +10392,13 @@ static void event_loop(VideoState *cur_stream)
             break;
         case SDL_WINDOWEVENT:
             switch (event.window.event) {
+                case SDL_WINDOWEVENT_SHOWN:
+                case SDL_WINDOWEVENT_RESTORED:
+                case SDL_WINDOWEVENT_FOCUS_GAINED:
+                case SDL_WINDOWEVENT_ENTER:
+                    ui_vsync_set(1);        /* the window is in sight again */
+                    cur_stream->force_refresh = 1;
+                    break;
                 case SDL_WINDOWEVENT_LEAVE:
                     ui_hover = 0;
                     break;
@@ -10380,7 +10758,16 @@ int main(int argc, char **argv)
             screen_width = screen_height = 0;   /* window follows the next video's size */
         startup_volume = 100;                   /* ffplay converts this each time; keep it fresh */
         input_filename = q_items[q_pos];        /* read_thread and the title use it */
-        window_title = NULL;
+        {                                       /* the window title: ffplay-custom - name, the name the title bar shows */
+            static char ui_title[400];
+            char nm[320];
+
+            ui_q_name(q_pos, nm, sizeof(nm));
+            snprintf(ui_title, sizeof(ui_title), "ffplay-custom - %s", nm);
+            window_title = ui_title;
+            if (window)
+                SDL_SetWindowTitle(window, window_title);
+        }
         if (xf_stream && xf_name == q_items[q_pos]) {
             /* it has been playing quietly under the end of the last item: carry on with it */
             is = xf_stream;
