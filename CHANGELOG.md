@@ -6,6 +6,14 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v28
+- The sound goes quiet while seeking, so there is no scratching.
+- Page Up and Page Down are off; only the window corners resize.
+- A tap on the playing tile fills the window instead of the screen; the size you gave the window is kept for every item, and full screen can no longer change it.
+- Preferences, Crossfade and Sleep timer: the name stays and the choices squeeze in beside it.
+- Previews: a video tile under the mouse plays at its own speed.
+- Neighbour video tiles are nearly as big as the middle one and lean toward it.
+
 ## v27
 - Playing again from the tiled view closes it sooner, and the video grows back a little quicker.
 - The screen-sleep check repeats every 2 s and the terminal says when the screen may sleep.
