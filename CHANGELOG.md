@@ -6,6 +6,22 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v27
+- Playing again from the tiled view closes it sooner, and the video grows back a little quicker.
+- The screen-sleep check repeats every 2 s and the terminal says when the screen may sleep.
+
+## v26
+- Previews on the seek bar: a picture of the video at the time under the mouse or the dragging, made in the background from key frames.
+- Remember window: the window's size and place are saved when the player closes; once you resize or tile the window the next items keep its size (new Preferences row).
+- Always on top with the O key (or a right click on the title bar when the window manager has no menu), with a dot in the title bar.
+- Song tiles are smaller than video tiles in the queue view while a video plays.
+
+## v25
+- Preferences: the mouse on a setting shows all its choices in that row, click one to pick it; the rows glide between value and choices, and the sleep timer row glides too.
+- Seeking in small steps: the bar follows every step at once and seeks are sent as fast as pictures arrive.
+- The video crossfade shows in the queue view tiles too.
+- Smooth slanted edges for the tiles; bigger video tiles; a tap on the playing tile grows the video first, then goes full screen.
+
 ## v24
 - Background playback no longer stutters: a window the window manager holds back stops waiting for the screen, and the packet queue is bigger so audio keeps flowing.
 - The window is shown once, so new items and the idle screen no longer raise it or re-center it; a tiled or maximized window keeps its size.

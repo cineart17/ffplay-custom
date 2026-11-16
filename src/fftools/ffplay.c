@@ -303,6 +303,7 @@ typedef struct VideoState {
     double prec_target;         /* seconds */
     volatile int ui_hold;       /* the reader saw the end of the last video: pause on its last picture */
     int ui_held;                /* 0 = not held, 1 = paused on the last picture, 2 = restarting */
+    int ui_thumb_id;            /* the seek previews of this stream: 0 = not started, -1 = none, else their number */
 
     char *filename;
     int width, height, xleft, ytop;
@@ -970,7 +971,7 @@ static void ui_flow_draw(VideoState *is);
 static int ui_flow_wants_redraw(VideoState *is);
 static int ui_flow_video(VideoState *is);
 static void ui_live_grab(VideoState *is, const SDL_Rect *rect, int flip);
-static void ui_xf_video_draw(VideoState *is);
+static void ui_xf_video_draw(VideoState *is, int to_tile);
 static double ui_vflow_p = 0.0;         /* 0 to 1: how far the playing video has shrunk into its tile (it animates when L is pressed) */
 static double ui_vflow_ep = 0.0;        /* the same, eased: slow, quick, slow */
 static int64_t ui_vflow_t = 0;          /* when the animation was last stepped */
@@ -1049,7 +1050,7 @@ static void video_image_display(VideoState *is)
     if (!ui_has_cover(is) && !ui_flow_video(is))    /* a cover is drawn by the queue view instead (ui_flow_draw) */
     {
         SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
-        ui_xf_video_draw(is);                   /* the next video fades in over the end of this one */
+        ui_xf_video_draw(is, 0);                /* the next video fades in over the end of this one */
     }
     set_sdl_yuv_conversion_mode(NULL);
     if (sp) {
@@ -1339,6 +1340,10 @@ static int     cfg_remember_volume = 1;     /* 1 = remember the volume between r
 static int     cfg_quit_when_done = 0;      /* 1 = quit when the queue ends */
 static int     cfg_wheel = 0;               /* mouse wheel: 0 = off, 1 = volume, 2 = seek */
 static int     cfg_crossfade = 0;           /* seconds the end of one item and the start of the next overlap (0 to 10) */
+static int     cfg_keep_window = 1;         /* 1 = remember the window's size and place, and keep its size between items */
+static int     cfg_win_x = 0, cfg_win_y = 0, cfg_win_w = 0, cfg_win_h = 0;     /* where it was when the player closed */
+static int     ui_user_sized = 0;           /* 1 = the window was resized or tiled by the user: the next items keep its size */
+static int64_t ui_prog_until = 0;           /* until then a change of the window size is our own, not the user's */
 static float   xf_open_gain = 1.0f;         /* loudness a stream starts with: 0 while it opens under the end of the last item */
 static float   ui_sleep_gain = 1.0f;        /* the sleep timer fades everything out with this */
 static VideoState *xf_stream = NULL; /* the next item, already playing under the end of this one */
@@ -1437,6 +1442,10 @@ static void settings_load(void)
             cfg_wheel = av_clip(n, 0, 2);
         else if (sscanf(line, " crossfade = %d", &n) == 1)
             cfg_crossfade = av_clip(n, 0, 10);
+        else if (sscanf(line, " remember_window = %d", &n) == 1)
+            cfg_keep_window = (n != 0);
+        else if (sscanf(line, " window_rect = %d %d %d %d", &cfg_win_x, &cfg_win_y, &cfg_win_w, &cfg_win_h) == 4)
+            ;
         else if (sscanf(line, " font = %400[^\n]", cfg_font) == 1) {
             n = (int)strlen(cfg_font);
             while (n > 0 && cfg_font[n - 1] == ' ')
@@ -1476,6 +1485,11 @@ static void settings_save(void)
     fprintf(f, "# Mouse wheel (and touchpad swipe): 0 = off, 1 = volume, 2 = seek by the seek step\nmouse_wheel = %d\n\n", cfg_wheel);
     fprintf(f, "# Seconds the end of one item and the start of the next overlap (0 = off, 10 at most)\ncrossfade = %d\n\n",
             cfg_crossfade);
+    fprintf(f, "# 1 = remember the window's size and place between runs, and keep its size from one item to the next\nremember_window = %d\n\n",
+            cfg_keep_window);
+    if (cfg_win_w > 0)
+        fprintf(f, "# Where the window was at the end of the last run: x y width height\nwindow_rect = %d %d %d %d\n\n",
+                cfg_win_x, cfg_win_y, cfg_win_w, cfg_win_h);
     ui_key_save(f);
     fprintf(f, "# Font file for the text (leave empty to use the system font)\nfont = %s\n", cfg_font);
     fclose(f);
@@ -1533,8 +1547,172 @@ static void volume_save(int volume)
 
 static int exit_status = 0;  /* 0 = quit, 10 = next, 11 = previous */
 
+/* ---- the previews on the seek bar ---- */
+#define UI_THUMBS 1                     /* 0 = no previews */
+#define UI_TH_MAX 240
+
+typedef struct {
+    uint8_t *rgba;                      /* the picture, made by the reader */
+    int ready;                          /* 1 = rgba is complete */
+    SDL_Texture *tex;                   /* made on first use, by the main thread */
+} UiThumb;
+
+static struct {
+    SDL_Thread *thread;
+    volatile int abort;
+    int id, n, w, h;                    /* the stream they belong to, how many, the size of each */
+    double dur;                         /* seconds */
+    int64_t start;                      /* the file's start time, in AV_TIME_BASE units */
+    char *file;
+    UiThumb t[UI_TH_MAX];
+} ui_th;
+
+static int ui_th_intr(void *p)
+{
+    return *(volatile int *)p;
+}
+
+/* The reader: its own copy of the file and a decoder that only decodes key frames */
+static int ui_th_run(void *arg)
+{
+    AVFormatContext *ic = NULL;
+    AVCodecContext *cc = NULL;
+    const AVCodec *dec = NULL;
+    AVPacket *pk = av_packet_alloc();
+    AVFrame *fr = av_frame_alloc();
+    struct SwsContext *sws = NULL;
+    int vs, n = ui_th.n, i, m = 0, stride, order[UI_TH_MAX], tw = ui_th.w, th = ui_th.h, made = 0;
+    int64_t t0 = av_gettime_relative();
+
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_LOW);      /* in the background: the playing comes first */
+    if (!pk || !fr)
+        goto end;
+    ic = avformat_alloc_context();
+    if (!ic)
+        goto end;
+    ic->interrupt_callback.callback = ui_th_intr;
+    ic->interrupt_callback.opaque = (void *)&ui_th.abort;
+    if (avformat_open_input(&ic, ui_th.file, NULL, NULL) < 0) {
+        ic = NULL;
+        goto end;
+    }
+    if (avformat_find_stream_info(ic, NULL) < 0)
+        goto end;
+    vs = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, &dec, 0);
+    if (vs < 0 || !dec || (ic->streams[vs]->disposition & AV_DISPOSITION_ATTACHED_PIC))
+        goto end;
+    cc = avcodec_alloc_context3(dec);
+    if (!cc || avcodec_parameters_to_context(cc, ic->streams[vs]->codecpar) < 0)
+        goto end;
+    cc->skip_frame = AVDISCARD_NONKEY;
+    cc->thread_count = 1;
+    if (avcodec_open2(cc, dec, NULL) < 0)
+        goto end;
+
+    for (stride = 32; stride >= 1; stride >>= 1)        /* coarse first, then finer: every time some are ready everywhere */
+        for (i = 0; i < n; i += stride)
+            if (stride == 32 || (i % (stride << 1)))
+                order[m++] = i;
+
+    for (i = 0; i < m && !ui_th.abort; i++) {
+        int idx = order[i], got = 0, tries;
+        int64_t ts = ui_th.start + (int64_t)((idx + 0.5) * ui_th.dur / n * AV_TIME_BASE);
+        uint8_t *dst, *dp[4] = { NULL };
+        int dl[4] = { 0 };
+
+        if (av_seek_frame(ic, -1, ts, AVSEEK_FLAG_BACKWARD) < 0)
+            continue;
+        avcodec_flush_buffers(cc);
+        for (tries = 0; tries < 400 && !got && !ui_th.abort; tries++) {
+            if (av_read_frame(ic, pk) < 0)
+                break;
+            if (pk->stream_index == vs && avcodec_send_packet(cc, pk) == 0) {
+                if (avcodec_receive_frame(cc, fr) == 0) {
+                    got = 1;
+                } else {                        /* the decoder keeps the picture back: ask for it */
+                    avcodec_send_packet(cc, NULL);
+                    if (avcodec_receive_frame(cc, fr) == 0)
+                        got = 1;
+                    else
+                        avcodec_flush_buffers(cc);
+                }
+            }
+            av_packet_unref(pk);
+        }
+        if (!got)
+            continue;
+        sws = sws_getCachedContext(sws, fr->width, fr->height, fr->format, tw, th, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+        dst = av_malloc((size_t)tw * th * 4);
+        if (sws && dst) {
+            dp[0] = dst;
+            dl[0] = tw * 4;
+            sws_scale(sws, (const uint8_t * const *)fr->data, fr->linesize, 0, fr->height, dp, dl);
+            ui_th.t[idx].rgba = dst;
+            __atomic_store_n(&ui_th.t[idx].ready, 1, __ATOMIC_RELEASE);
+            made++;
+        } else {
+            av_free(dst);
+        }
+        av_frame_unref(fr);
+    }
+end:
+    av_log(NULL, AV_LOG_VERBOSE, "ffplay-custom: seek previews: %d of %d made in %d ms\n", made, n, (int)((av_gettime_relative() - t0) / 1000));
+    sws_freeContext(sws);
+    avcodec_free_context(&cc);
+    avformat_close_input(&ic);
+    av_packet_free(&pk);
+    av_frame_free(&fr);
+    return 0;
+}
+
+static void ui_th_stop(void)
+{
+    int i;
+
+    if (ui_th.thread) {
+        ui_th.abort = 1;
+        SDL_WaitThread(ui_th.thread, NULL);
+        ui_th.thread = NULL;
+    }
+    for (i = 0; i < UI_TH_MAX; i++) {
+        if (ui_th.t[i].tex)
+            SDL_DestroyTexture(ui_th.t[i].tex);
+        ui_th.t[i].tex = NULL;
+        av_freep(&ui_th.t[i].rgba);
+        ui_th.t[i].ready = 0;
+    }
+    av_freep(&ui_th.file);
+    ui_th.n = 0;
+    ui_th.id = 0;
+    ui_th.abort = 0;
+}
+
+/* Save where the window is, for the next start */
+static void ui_win_save(void)
+{
+    int x, y, w, h;
+    Uint32 fl;
+
+    if (!cfg_keep_window || !window || is_full_screen)
+        return;
+    fl = SDL_GetWindowFlags(window);
+    if (!(fl & SDL_WINDOW_SHOWN) || (fl & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)))
+        return;
+    SDL_GetWindowPosition(window, &x, &y);
+    SDL_GetWindowSize(window, &w, &h);
+    if (w < 260 || h < 160 || (x == cfg_win_x && y == cfg_win_y && w == cfg_win_w && h == cfg_win_h))
+        return;
+    cfg_win_x = x;
+    cfg_win_y = y;
+    cfg_win_w = w;
+    cfg_win_h = h;
+    settings_save();
+}
+
 static void do_exit(VideoState *is)
 {
+    ui_th_stop();
+    ui_win_save();
     if (is)
         volume_save(is->audio_volume);
     if (is) {
@@ -1587,7 +1765,25 @@ static int ui_shown_once = 0;   /* the window is shown once; later items leave i
 static int video_open(VideoState *is)
 {
     int w,h;
+    static int restored = 0;
 
+    if (!ui_shown_once && !restored && cfg_keep_window && !screen_width && cfg_win_w >= 260 && cfg_win_h >= 160) {
+        int nd = SDL_GetNumVideoDisplays(), k, ok = 0;
+        SDL_Rect b;
+
+        restored = 1;                           /* the window as it was when the player closed last time */
+        for (k = 0; k < nd; k++)
+            if (SDL_GetDisplayBounds(k, &b) == 0 && cfg_win_x + 60 >= b.x && cfg_win_x + 60 < b.x + b.w &&
+                cfg_win_y + 20 >= b.y && cfg_win_y + 20 < b.y + b.h)
+                ok = 1;                         /* only if that place is still on a screen */
+        if (ok) {
+            screen_left = cfg_win_x;
+            screen_top = cfg_win_y;
+        }
+        screen_width = cfg_win_w;
+        screen_height = cfg_win_h;
+        ui_user_sized = 1;
+    }
     w = screen_width ? screen_width : default_width;
     h = screen_height ? screen_height : default_height;
 
@@ -1607,6 +1803,7 @@ static int video_open(VideoState *is)
             w = cw;
             h = ch;
         } else {
+            ui_prog_until = av_gettime_relative() + 1500000;     /* the size change that follows is ours */
             SDL_SetWindowSize(window, w, h);
         }
         if (!ui_shown_once)
@@ -1861,6 +2058,96 @@ static void ui_seek_bar(VideoState *is, SDL_Rect *sk, double frac)
     }
 }
 
+/* Start the previews of the stream that plays, once it has played for a moment (a second reader should not compete with the opening) */
+static void ui_th_tick(VideoState *is)
+{
+    static int next_id = 0;
+    double pos, dur;
+    int cw, ch, tw, th;
+
+    if (!UI_THUMBS || is->ui_thumb_id || !is->ic)
+        return;
+    pos = get_master_clock(is);
+    if (isnan(pos) || pos < 1.5)
+        return;
+    dur = is->ic->duration / (double)AV_TIME_BASE;
+    if (!is->video_st || (is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) || dur < 8.0 || !is->filename ||
+        strstr(is->filename, "://") || !is->video_st->codecpar->width || !is->video_st->codecpar->height) {
+        is->ui_thumb_id = -1;                   /* songs, short clips and streams get none */
+        ui_th_stop();
+        return;
+    }
+    cw = is->video_st->codecpar->width;
+    ch = is->video_st->codecpar->height;
+    tw = 192;
+    th = (int)((double)ch * tw / cw);
+    if (th > 108) {
+        th = 108;
+        tw = (int)((double)cw * th / ch);
+    }
+    tw = FFMAX(tw & ~1, 16);
+    th = FFMAX(th & ~1, 16);
+    ui_th_stop();                               /* the ones of the item before */
+    is->ui_thumb_id = ++next_id;
+    ui_th.id = is->ui_thumb_id;
+    ui_th.n = av_clip((int)(dur / 3.0), 40, UI_TH_MAX);
+    ui_th.w = tw;
+    ui_th.h = th;
+    ui_th.dur = dur;
+    ui_th.start = is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0;
+    ui_th.file = av_strdup(is->filename);
+    if (!ui_th.file || !(ui_th.thread = SDL_CreateThread(ui_th_run, "seek previews", NULL))) {
+        ui_th_stop();
+        is->ui_thumb_id = -1;
+    }
+}
+
+/* The preview for the fraction f of the video, above the time label (its top is at ybox), centered on cx. It takes the nearest
+   one that is ready, so it never waits; a few more are ready every moment */
+static void ui_th_draw(VideoState *is, double f, int cx, int ybox)
+{
+    int n = ui_th.n, idx, d, found = -1;
+    SDL_Rect r, sh;
+    UiThumb *t;
+    double sc;
+
+    if (!UI_THUMBS || ui_th.id <= 0 || ui_th.id != is->ui_thumb_id || n <= 0 || is->width < 380)
+        return;
+    idx = av_clip((int)(f * n), 0, n - 1);
+    for (d = 0; d < n && found < 0; d++) {
+        if (idx - d >= 0 && __atomic_load_n(&ui_th.t[idx - d].ready, __ATOMIC_ACQUIRE))
+            found = idx - d;
+        else if (idx + d < n && __atomic_load_n(&ui_th.t[idx + d].ready, __ATOMIC_ACQUIRE))
+            found = idx + d;
+    }
+    if (found < 0)
+        return;
+    t = &ui_th.t[found];
+    if (!t->tex) {
+        t->tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, ui_th.w, ui_th.h);
+        if (!t->tex)
+            return;
+        SDL_UpdateTexture(t->tex, NULL, t->rgba, ui_th.w * 4);
+        SDL_SetTextureBlendMode(t->tex, SDL_BLENDMODE_NONE);
+    }
+    sc = is->width >= 1400 ? 1.5 : is->width >= 900 ? 1.25 : 1.0;
+    r.w = (int)(ui_th.w * sc);
+    r.h = (int)(ui_th.h * sc);
+    r.x = av_clip(cx - r.w / 2, 8, FFMAX(is->width - r.w - 8, 8));
+    r.y = ybox - 6 - r.h;
+    if (r.y < 34)
+        return;                                 /* no room above the bar in a small window */
+    sh.x = r.x - 3;
+    sh.y = r.y - 3;
+    sh.w = r.w + 6;
+    sh.h = r.h + 6;
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 90);
+    SDL_RenderFillRect(renderer, &sh);
+    SDL_RenderCopy(renderer, t->tex, NULL, &r);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 60);
+    SDL_RenderDrawRect(renderer, &r);
+}
+
 /* A small label above the seek bar: the time under the mouse (or where you are dragging to),
    with the title of the chapter that time belongs to, if the file has chapters */
 static void ui_seek_tooltip(VideoState *is, const SDL_Rect *sk)
@@ -1905,11 +2192,32 @@ static void ui_seek_tooltip(VideoState *is, const SDL_Rect *sk)
     box.h = 28;
     box.x = cx - w / 2;
     box.y = sk->y - 16 - box.h;
+    ui_th_draw(is, f, cx, box.y);
     ui_label_s(box.x + 14, box.y + box.h / 2, text, 16, 245, 245, 245, 255);
 }
 
 static void ui_ctrl_draw(VideoState *is, const SDL_Rect *sk);
 static void ui_titlebar_draw(VideoState *is);
+
+static int ui_on_top = 0;               /* 1 = the window stays above the others */
+
+static void ui_toggle_on_top(void)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+    if (!window)
+        return;
+    ui_on_top = !ui_on_top;
+    SDL_SetWindowAlwaysOnTop(window, ui_on_top ? SDL_TRUE : SDL_FALSE);
+    ui_wake();                          /* the title bar shows, with its dot */
+#endif
+}
+
+/* Seeking with the keys or the wheel: the bar follows every step at once, and a seek is sent as soon as the one before it has
+   shown its picture, so pictures keep coming while a key is held */
+static int ui_ks_want = 0;              /* 1 = a seek to ui_ks_target is waiting to be sent */
+static double ui_ks_target = 0.0;       /* seconds: where the steps have taken it (the last one sent, when none waits) */
+static int64_t ui_ks_next = 0, ui_ks_issued = 0;
+static VideoState *ui_ks_is = NULL;     /* the stream the waiting seek is for (a new item cancels it) */
 
 static void ui_draw(VideoState *is)
 {
@@ -1929,7 +2237,9 @@ static void ui_draw(VideoState *is)
 
         /* While a seek is under way the clock is not valid yet: show where the seek is
            going (or the last known position), so the bar does not jump back to the start */
-        if (!seek_by_bytes && is->seek_req)
+        if (!seek_by_bytes && ui_ks_want)
+            pos = ui_ks_target;                 /* the steps of the keys, before they are sent */
+        else if (!seek_by_bytes && is->seek_req)
             pos = is->seek_pos / (double)AV_TIME_BASE;
         else if (isnan(pos))
             pos = (!seek_by_bytes && is->seek_pos) ? is->seek_pos / (double)AV_TIME_BASE : ui_last_pos;
@@ -2003,6 +2313,29 @@ static void ui_seek_flush(VideoState *is, int force)
         ui_precise_next = force;        /* the last seek of a drag lands exactly */
         stream_seek(is, ts, 0, 0);
     }
+}
+
+/* Send the waiting key seek when the one before it has landed (its picture and its sound are there) */
+static void ui_ks_tick(VideoState *is)
+{
+    int64_t now;
+
+    if (!ui_ks_want)
+        return;
+    if (!is || !is->ic || is != ui_ks_is) {
+        ui_ks_want = 0;
+        return;
+    }
+    now = av_gettime_relative();
+    if (now < ui_ks_next)
+        return;
+    if ((is->seek_req || is->prec_v || is->prec_a) && now - ui_ks_issued < 1500000)
+        return;                         /* still on its way: more steps add up meanwhile */
+    ui_precise_next = 1;
+    stream_seek(is, (int64_t)(ui_ks_target * AV_TIME_BASE), 0, 0);
+    ui_ks_issued = now;
+    ui_ks_next = now + 30000;
+    ui_ks_want = 0;
 }
 
 static void ui_apply(VideoState *is, int x, int final)
@@ -2844,6 +3177,9 @@ static int ui_ctx_open = 0;     /* 1 while the right-click menu of a queue item 
 static int ui_ctx_x, ui_ctx_y;  /* where it was opened */
 static int ui_ctx_hover = -1;   /* its row under the mouse */
 static char *ui_ctx_name = NULL;    /* the queue item it is for */
+static double ui_chip_e = 0.0;          /* 0 to 1: how far the sleep timer row has changed into its choices */
+static int64_t ui_chip_last = 0;
+static int ui_chip_anim = 0;            /* 1 = it is still gliding */
 static int ui_q_hover_kind = 0;     /* what the mouse is over in the queue panel (UI_Q_NONE ...) */
 static int ui_q_hover_idx = -1;     /* ... and which item or choice */
 static int64_t ui_menu_anim_t0 = 0; /* when the popup menu opened (its rows fade in from then) */
@@ -3612,17 +3948,20 @@ static void ui_blobs(void)
 }
 
 /* ----- the Preferences panel ----- */
-#define UI_PREF_ROWS 8
+#define UI_PREF_ROWS 9
 #define UI_PREF_ROW 52          /* height of one row */
 #define UI_PREF_HEAD 76         /* space for the title */
 #define UI_PREF_FOOT 52         /* space for the hint at the bottom */
 
 static int ui_prefs_open = 0;       /* 1 while the Preferences panel is showing */
 static int ui_prefs_hover = -1;     /* row under the mouse */
+static double ui_pref_open[UI_PREF_ROWS];   /* 0 to 1: how far each row has changed into its list of choices */
+static int ui_prefs_mx = -1, ui_prefs_my = -1;      /* the mouse in the panel (for the choice under it) */
+static int ui_prefs_anim = 0;       /* 1 = a row is still gliding */
 
 static const char *ui_pref_name[UI_PREF_ROWS] = {
     "Seek step", "Volume step", "Hide bars after", "Start fullscreen",
-    "Bar color", "Remember volume", "Quit when the queue ends", "Mouse wheel"
+    "Bar color", "Remember volume", "Quit when the queue ends", "Mouse wheel", "Remember window"
 };
 static const struct { const char *name; int r, g, b; } ui_colors[] = {
     { "Blue", 84, 120, 168 }, { "Teal", 66, 148, 156 }, { "Green", 92, 150, 104 },
@@ -3635,7 +3974,7 @@ static const int ui_vol_steps[] = { 1, 2, 4, 8, 16 };
 static const int ui_hide_steps[] = { 1, 2, 3, 4, 5, 8, 10, 15, 30 };
 
 /* Rows with arrows (the others switch On/Off when clicked) */
-static int ui_pref_arrows(int row)
+static av_unused int ui_pref_arrows(int row)
 {
     return row == 0 || row == 1 || row == 2 || row == 4 || row == 7;
 }
@@ -3678,12 +4017,141 @@ static void ui_pref_value(int row, char *out, size_t size)
         break;
     case 5: snprintf(out, size, "%s", cfg_remember_volume ? "On" : "Off"); break;
     case 6: snprintf(out, size, "%s", cfg_quit_when_done ? "On" : "Off"); break;
+    case 8: snprintf(out, size, "%s", cfg_keep_window ? "On" : "Off"); break;
     default: snprintf(out, size, "%s", cfg_wheel == 1 ? "Volume + queue" : cfg_wheel == 2 ? "Seek + queue" : "Off"); break;
     }
 }
 
+/* The choices of a row, for the list that shows when the mouse is on it. Returns how many; sel = the one that is on (or -1) */
+static const double ui_seek_choices[] = { 0.3, 0.5, 1, 2, 3, 5, 10, 15, 30 };
+
+static int ui_pref_choices(int row, const char *names[10], char store[10][20], int *sel)
+{
+    int n = 0, i, b = 0;
+
+    *sel = -1;
+    switch (row) {
+    case 0:
+        for (i = 0; i < 9; i++) {
+            snprintf(store[i], 20, "%gs", ui_seek_choices[i]);
+            if (fabs(ui_seek_choices[i] - cfg_seek) < fabs(ui_seek_choices[b] - cfg_seek))
+                b = i;
+        }
+        n = 9;
+        *sel = b;
+        break;
+    case 1:
+        for (i = 0; i < 5; i++) {
+            snprintf(store[i], 20, "%d", ui_vol_steps[i]);
+            if (FFABS(ui_vol_steps[i] - cfg_vol_step) < FFABS(ui_vol_steps[b] - cfg_vol_step))
+                b = i;
+        }
+        n = 5;
+        *sel = b;
+        break;
+    case 2:
+        for (i = 0; i < 9; i++) {
+            snprintf(store[i], 20, "%ds", ui_hide_steps[i]);
+            if (fabs(ui_hide_steps[i] - cfg_hide_delay / 1000000.0) < fabs(ui_hide_steps[b] - cfg_hide_delay / 1000000.0))
+                b = i;
+        }
+        n = 9;
+        *sel = b;
+        break;
+    case 4:
+        for (i = 0; i < UI_NCOLORS; i++)
+            snprintf(store[i], 20, "%s", ui_colors[i].name);
+        n = UI_NCOLORS;
+        *sel = ui_color_index();
+        break;
+    case 7:
+        snprintf(store[0], 20, "Off");
+        snprintf(store[1], 20, "Volume + queue");
+        snprintf(store[2], 20, "Seek + queue");
+        n = 3;
+        *sel = av_clip(cfg_wheel, 0, 2);
+        break;
+    default:                                    /* the switches: Off and On */
+        snprintf(store[0], 20, "Off");
+        snprintf(store[1], 20, "On");
+        n = 2;
+        *sel = (row == 3 ? cfg_fullscreen : row == 5 ? cfg_remember_volume : row == 8 ? cfg_keep_window : cfg_quit_when_done) ? 1 : 0;
+        break;
+    }
+    for (i = 0; i < n; i++)
+        names[i] = store[i];
+    return n;
+}
+
+/* Where the choices of a row go (centered in the row; the text gets smaller if they would not fit). Returns how many. */
+static int ui_pref_layout(int row, const SDL_Rect *p, int cy, SDL_Rect out[10], const char *names[10], char store[10][20],
+                          int *sel, int *px)
+{
+    int n = ui_pref_choices(row, names, store, sel), i, total, x, w[10], pass;
+
+    *px = 18;
+    for (pass = 0; pass < 2; pass++) {
+        total = 0;
+        for (i = 0; i < n; i++) {
+            w[i] = ui_text_width(names[i], *px) + (pass ? 12 : 18);
+            total += w[i] + (i ? 4 : 0);
+        }
+        if (total <= p->w - 32)
+            break;
+        *px = 15;
+    }
+    x = p->x + (p->w - total) / 2;
+    for (i = 0; i < n; i++) {
+        out[i].x = x;
+        out[i].y = cy - 16;
+        out[i].w = w[i];
+        out[i].h = 32;
+        x += w[i] + 4;
+    }
+    return n;
+}
+
+/* Which choice of the row is at x, y? -1 if none (or if the choices are not showing yet) */
+static int ui_pref_chip_at(int row, const SDL_Rect *p, int x, int y)
+{
+    SDL_Rect r[10];
+    const char *names[10];
+    char store[10][20];
+    int n, i, sel, px, cy = p->y + UI_PREF_HEAD + row * UI_PREF_ROW + UI_PREF_ROW / 2;
+
+    if (row < 0 || row >= UI_PREF_ROWS || ui_pref_open[row] < 0.4)
+        return -1;
+    n = ui_pref_layout(row, p, cy, r, names, store, &sel, &px);
+    for (i = 0; i < n; i++)
+        if (x >= r[i].x && x < r[i].x + r[i].w && y >= r[i].y && y < r[i].y + r[i].h)
+            return i;
+    return -1;
+}
+
+/* Pick choice number idx of a row and save the file */
+static void ui_pref_choose(int row, int idx)
+{
+    switch (row) {
+    case 0: cfg_seek = ui_seek_choices[av_clip(idx, 0, 8)]; break;
+    case 1: cfg_vol_step = ui_vol_steps[av_clip(idx, 0, 4)]; break;
+    case 2: cfg_hide_delay = (int64_t)ui_hide_steps[av_clip(idx, 0, 8)] * 1000000; break;
+    case 3: cfg_fullscreen = idx != 0; break;
+    case 4:
+        idx = av_clip(idx, 0, UI_NCOLORS - 1);
+        cfg_bar_r = ui_colors[idx].r;
+        cfg_bar_g = ui_colors[idx].g;
+        cfg_bar_b = ui_colors[idx].b;
+        break;
+    case 5: cfg_remember_volume = idx != 0; break;
+    case 6: cfg_quit_when_done = idx != 0; break;
+    case 8: cfg_keep_window = idx != 0; break;
+    default: cfg_wheel = av_clip(idx, 0, 2); break;
+    }
+    settings_save();
+}
+
 /* Change a setting (dir = -1 or 1 for the arrows) and save the file */
-static void ui_pref_change(int row, int dir)
+static av_unused void ui_pref_change(int row, int dir)
 {
     int i;
 
@@ -3732,9 +4200,28 @@ static void ui_prefs_draw(void)
     SDL_Rect p, sw;
     char value[48];
     int ww, wh, i, cy, x_right, vw, vx;
+    double e, k, dt;
+    static int64_t last = 0;
+    int64_t now = av_gettime_relative();
 
-    if (!ui_prefs_open)
+    if (!ui_prefs_open) {
+        for (i = 0; i < UI_PREF_ROWS; i++)
+            ui_pref_open[i] = 0.0;
+        ui_prefs_anim = 0;
         return;
+    }
+    dt = now - last > 100000 ? 0.016 : (now - last) / 1000000.0;
+    last = now;
+    ui_prefs_anim = 0;
+    for (i = 0; i < UI_PREF_ROWS; i++) {        /* the rows glide toward their list of choices, or back */
+        double tgt = i == ui_prefs_hover ? 1.0 : 0.0;
+
+        ui_pref_open[i] += (tgt - ui_pref_open[i]) * (1.0 - exp(-dt / 0.045));
+        if (fabs(tgt - ui_pref_open[i]) < 0.01)
+            ui_pref_open[i] = tgt;
+        else
+            ui_prefs_anim = 1;
+    }
     SDL_GetWindowSize(window, &ww, &wh);
     p = ui_prefs_rect(ww, wh);
     ui_glass(&p, 28);
@@ -3744,13 +4231,15 @@ static void ui_prefs_draw(void)
     ui_label(p.x + 32, p.y + UI_PREF_HEAD / 2 + 4, "Preferences", 28, 245, 245, 245, 255);
     for (i = 0; i < UI_PREF_ROWS; i++) {
         cy = p.y + UI_PREF_HEAD + i * UI_PREF_ROW + UI_PREF_ROW / 2;
-        ui_label(p.x + 32, cy, ui_pref_name[i], 20, 245, 245, 245, i == ui_prefs_hover ? 255 : 210);
+        e = ui_pref_open[i];
+        k = 1.0 - e;                            /* how much of the name and the value is still showing */
+        ui_label(p.x + 32, cy, ui_pref_name[i], 20, 245, 245, 245, (int)((i == ui_prefs_hover ? 255 : 210) * k));
 
         ui_pref_value(i, value, sizeof(value));
         vw = ui_text_width(value, 20);
         if (ui_pref_arrows(i)) {
-            ui_arrow(x_right - 184, cy, -1, 150);
-            ui_arrow(x_right - 6, cy, 1, 150);
+            ui_arrow(x_right - 184, cy, -1, (int)(150 * k));
+            ui_arrow(x_right - 6, cy, 1, (int)(150 * k));
             vx = x_right - 101 - vw / 2;        /* centered between the arrows */
         } else {
             vx = x_right - vw;                  /* On / Off on the right */
@@ -3760,15 +4249,40 @@ static void ui_prefs_draw(void)
             sw.y = cy - 8;
             sw.w = 16;
             sw.h = 16;
-            SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 255);
+            SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, (int)(255 * k));
             ui_pill(&sw);
         }
         if (!ui_pref_arrows(i) && !strcmp(value, "Off"))
-            ui_label(vx, cy, value, 20, 150, 150, 150, 255);
+            ui_label(vx, cy, value, 20, 150, 150, 150, (int)(255 * k));
         else
-            ui_label(vx, cy, value, 20, 245, 245, 245, 255);
+            ui_label(vx, cy, value, 20, 245, 245, 245, (int)(255 * k));
+
+        if (e > 0.01) {                         /* the choices, gliding in */
+            SDL_Rect r[10];
+            const char *names[10];
+            char store[10][20];
+            int n, c, sel, px, yo = (int)((1.0 - e) * 8), hot;
+
+            n = ui_pref_layout(i, &p, cy, r, names, store, &sel, &px);
+            for (c = 0; c < n; c++) {
+                hot = i == ui_prefs_hover && ui_prefs_mx >= r[c].x && ui_prefs_mx < r[c].x + r[c].w &&
+                      ui_prefs_my >= r[c].y && ui_prefs_my < r[c].y + r[c].h;
+                if (hot) {                      /* a soft pill under the choice the mouse is on */
+                    SDL_Rect pill = r[c];
+
+                    pill.y += yo;
+                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, (int)(34 * e));
+                    ui_pill(&pill);
+                }
+                if (c == sel)                   /* the choice that is on: in the bar color */
+                    ui_label_c(r[c].x + r[c].w / 2, cy + yo, names[c], px, av_clip(cfg_bar_r + 40, 0, 255),
+                               av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), (int)(255 * e));
+                else
+                    ui_label_c(r[c].x + r[c].w / 2, cy + yo, names[c], px, 245, 245, 245, (int)((hot ? 255 : 170) * e));
+            }
+        }
     }
-    ui_label(p.x + 32, p.y + p.h - UI_PREF_FOOT / 2, "Click the arrows or switches.  Esc closes.",
+    ui_label(p.x + 32, p.y + p.h - UI_PREF_FOOT / 2, "Move the mouse onto a setting to see its choices.  Esc closes.",
              15, 170, 170, 170, 255);
 }
 
@@ -3776,7 +4290,7 @@ static void ui_prefs_draw(void)
 static int ui_prefs_mouse(VideoState *is, SDL_Event *ev)
 {
     SDL_Rect p;
-    int ww, wh, x, y, row, x_right;
+    int ww, wh, x, y, row;
 
     SDL_GetWindowSize(window, &ww, &wh);
     p = ui_prefs_rect(ww, wh);
@@ -3785,17 +4299,22 @@ static int ui_prefs_mouse(VideoState *is, SDL_Event *ev)
     row = (y >= p.y + UI_PREF_HEAD) ? (y - p.y - UI_PREF_HEAD) / UI_PREF_ROW : -1;
     if (row >= UI_PREF_ROWS || x < p.x || x >= p.x + p.w)
         row = -1;
-    x_right = p.x + p.w - 32;
     ui_wake();
+    ui_prefs_mx = x;
+    ui_prefs_my = y;
 
     if (ev->type == SDL_MOUSEMOTION) {
         ui_prefs_hover = row;
     } else if (ev->type == SDL_MOUSEBUTTONDOWN) {
         if (ev->button.button != SDL_BUTTON_LEFT || x < p.x || x >= p.x + p.w ||
-            y < p.y || y >= p.y + p.h)
+            y < p.y || y >= p.y + p.h) {
             ui_prefs_open = 0;                  /* right-click or a click outside closes it */
-        else if (row >= 0)
-            ui_pref_change(row, x < x_right - 100 ? -1 : 1);
+        } else if (row >= 0) {
+            int c = ui_pref_chip_at(row, &p, x, y);
+
+            if (c >= 0)
+                ui_pref_choose(row, c);         /* one of the choices of the row */
+        }
     }
     if (is)
         is->force_refresh = 1;
@@ -4516,25 +5035,41 @@ static void ui_q_draw(int ww, int wh)
     /* sleep timer: the value, or the choices while the mouse is on the row */
     cy = fy + 66;
     sel = ui_sleep_current();
-    if (hk == UI_Q_SLEEP || hk == UI_Q_CHIP) {
-        names = ui_q_chips(&p, cy, chip);
-        for (i = 0; i < 6; i++) {
-            int hot = hk == UI_Q_CHIP && ui_q_hover_idx == i;
+    {
+        double tgt = (hk == UI_Q_SLEEP || hk == UI_Q_CHIP) ? 1.0 : 0.0, ek, dt;
+        int64_t t2 = av_gettime_relative();
+        int yo;
 
-            if (i == sel)               /* the choice that is on: in the bar color */
-                ui_label_c(chip[i].x + chip[i].w / 2, cy, names[i], 16, av_clip(cfg_bar_r + 40, 0, 255),
-                           av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), 255);
-            else
-                ui_label_c(chip[i].x + chip[i].w / 2, cy, names[i], 16, 245, 245, 245, hot ? 255 : 160);
+        dt = t2 - ui_chip_last > 100000 ? 0.016 : (t2 - ui_chip_last) / 1000000.0;
+        ui_chip_last = t2;
+        ui_chip_e += (tgt - ui_chip_e) * (1.0 - exp(-dt / 0.045));      /* the row glides, it does not jump */
+        if (fabs(tgt - ui_chip_e) < 0.01)
+            ui_chip_e = tgt;
+        ui_chip_anim = ui_chip_e != tgt;
+        ek = 1.0 - ui_chip_e;
+        yo = (int)(ek * 7);
+        if (ui_chip_e > 0.01) {
+            names = ui_q_chips(&p, cy, chip);
+            for (i = 0; i < 6; i++) {
+                int hot = hk == UI_Q_CHIP && ui_q_hover_idx == i;
+
+                if (i == sel)           /* the choice that is on: in the bar color */
+                    ui_label_c(chip[i].x + chip[i].w / 2, cy + yo, names[i], 16, av_clip(cfg_bar_r + 40, 0, 255),
+                               av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), (int)(255 * ui_chip_e));
+                else
+                    ui_label_c(chip[i].x + chip[i].w / 2, cy + yo, names[i], 16, 245, 245, 245,
+                               (int)((hot ? 255 : 160) * ui_chip_e));
+            }
         }
-    } else {
-        ui_label(p.x + 20, cy, "Sleep timer", 18, 240, 240, 240, 210);
-        ui_sleep_text(text, sizeof(text));
-        if (sel)
-            ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, av_clip(cfg_bar_r + 40, 0, 255),
-                     av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), 255);
-        else
-            ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, 150, 150, 150, 255);
+        if (ek > 0.01) {
+            ui_label(p.x + 20, cy - yo, "Sleep timer", 18, 240, 240, 240, (int)(210 * ek));
+            ui_sleep_text(text, sizeof(text));
+            if (sel)
+                ui_label(right - 20 - ui_text_width(text, 18), cy - yo, text, 18, av_clip(cfg_bar_r + 40, 0, 255),
+                         av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), (int)(255 * ek));
+            else
+                ui_label(right - 20 - ui_text_width(text, 18), cy - yo, text, 18, 150, 150, 150, (int)(255 * ek));
+        }
     }
 
     /* the counter: which item, and how far through the whole queue. Quiet on purpose. */
@@ -5244,6 +5779,8 @@ static void ui_menu_tick(VideoState *is)
         is->force_refresh = 1;                  /* the disc turns, the bars move, the covers glide */
     if (ui_q_open && ui_q_off != 0.0)
         is->force_refresh = 1;                  /* the queue list is still gliding */
+    if ((ui_q_open && ui_chip_anim) || (ui_prefs_open && ui_prefs_anim))
+        is->force_refresh = 1;                  /* a row is changing into its choices, or back */
     if (ui_q_open && av_gettime_relative() - ui_q_anim_t0 < 700000)
         is->force_refresh = 1;                  /* the queue rows are still fading in */
     if (ui_q_open && (ui_menu_open || ui_idle) && (second != last_second || seen_gen != q_dur_gen)) {
@@ -5294,12 +5831,18 @@ static int ui_q_autoscroll(void)
 static void ui_power_tick(VideoState *is)
 {
     static int inhibit = -1;
-    int want = is && !is->paused && is->video_st &&
+    static int64_t asserted = 0;
+    int64_t now = av_gettime_relative();
+    int want = is && !is->paused && !is->ui_held && is->video_st &&
                !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC);
 
-    if (want == inhibit)
+    if (want == inhibit && now - asserted < 2000000)    /* checked again every 2 s, not only when the state changes */
         return;
+    if (want != inhibit)
+        av_log(NULL, AV_LOG_INFO, want ? "screen kept awake (a video is playing)\n"
+                                       : "screen may sleep (the system's idle settings apply)\n");
     inhibit = want;
+    asserted = now;
     if (want)
         SDL_DisableScreenSaver();       /* playing a video: keep the screen on */
     else
@@ -5932,6 +6475,7 @@ static void ui_vflow_set(VideoState *is, int on)
 }
 
 /* A tap on the tile of the video that plays: it opens full screen and plays (1 = the window goes full screen, 0 = it only fills the window) */
+static int ui_tile_fs_pending = 0;      /* the window goes full screen once the video has grown back */
 #define UI_TILE_TAP_FULLSCREEN 1
 
 static void ui_tile_open(VideoState *is)
@@ -5942,7 +6486,7 @@ static void ui_tile_open(VideoState *is)
     ui_vflow_set(is, 0);
 #if UI_TILE_TAP_FULLSCREEN
     if (!is_full_screen)
-        toggle_full_screen(is);
+        ui_tile_fs_pending = 1;         /* not at the same time as the video grows: that made it stutter */
 #endif
 }
 
@@ -6075,6 +6619,39 @@ static SDL_Texture *ui_flow_icon(void)
 
 /* A picture drawn as a slightly turned card: the edge nearest the middle of the row is shorter (tilt is -1 for the covers
    on the left, +1 on the right, 0 in the middle, and every value between while the row glides) */
+/* SDL draws a slanted edge with no smoothing, so it shows steps. A thin fringe along the top and the bottom edge fades out
+   over about a pixel and smooths them. v = the vertices of the tile: n + 1 columns, the top one at 2k, the bottom one at 2k + 1. */
+static void ui_quad_fringe(SDL_Texture *tex, const SDL_Vertex *v, int n)
+{
+    enum { MAXN = 32 };
+    SDL_Vertex f[(MAXN + 1) * 4];
+    int idx[MAXN * 12], k, a, b;
+
+    if (n > MAXN || v[0].color.a <= 40)         /* the faint shadows do not need it */
+        return;
+    for (k = 0; k <= n; k++) {
+        f[k * 4] = v[k * 2];                    /* the top edge, half a pixel inside... */
+        f[k * 4].position.y += 0.5f;
+        f[k * 4 + 1] = v[k * 2];                /* ...fading to nothing a pixel outside */
+        f[k * 4 + 1].position.y -= 1.0f;
+        f[k * 4 + 1].color.a = 0;
+        f[k * 4 + 2] = v[k * 2 + 1];
+        f[k * 4 + 2].position.y -= 0.5f;
+        f[k * 4 + 3] = v[k * 2 + 1];
+        f[k * 4 + 3].position.y += 1.0f;
+        f[k * 4 + 3].color.a = 0;
+    }
+    for (k = 0; k < n; k++) {
+        a = k * 4;
+        b = (k + 1) * 4;
+        idx[k * 12] = a;          idx[k * 12 + 1] = a + 1;  idx[k * 12 + 2] = b;
+        idx[k * 12 + 3] = a + 1;  idx[k * 12 + 4] = b + 1;  idx[k * 12 + 5] = b;
+        idx[k * 12 + 6] = a + 2;  idx[k * 12 + 7] = a + 3;  idx[k * 12 + 8] = b + 2;
+        idx[k * 12 + 9] = a + 3;  idx[k * 12 + 10] = b + 3; idx[k * 12 + 11] = b + 2;
+    }
+    SDL_RenderGeometry(renderer, tex, f, (n + 1) * 4, idx, n * 12);
+}
+
 static void ui_flow_quad(SDL_Texture *tex, const SDL_Rect *t, int al, int md, double tilt)
 {
     enum { NS = 16 };
@@ -6112,6 +6689,7 @@ static void ui_flow_quad(SDL_Texture *tex, const SDL_Rect *t, int al, int md, do
         idx[k * 6 + 5] = k * 2 + 2;
     }
     SDL_RenderGeometry(renderer, tex, v, (NS + 1) * 2, idx, NS * 6);
+    ui_quad_fringe(tex, v, NS);
 }
 
 static void ui_flow_tile(int idx, const SDL_Rect *tile, int al, int md, double tilt)
@@ -6151,6 +6729,16 @@ static void ui_flow_fit(int i, int sw, int sh, int *nw, int *nh)
         *nw = asp >= 1.0 ? sw : (int)(sh * asp);
         *nh = asp >= 1.0 ? (int)(sw / asp) : sh;
     }
+}
+
+/* The slot a tile sits in. While a video plays the slots are big; a song tile keeps the smaller size it has in a row of songs */
+static double ui_flow_slot(int i, double B, double W, double H)
+{
+    double small = FFMIN(W * 0.30, H * 0.44);
+
+    if (ui_flow_vmode && i != q_pos && ui_cov_aspect(q_items[i]) <= 0.0 && small < B)
+        return small;
+    return B;
 }
 
 /* Like ui_flow_quad, but with rounded corners (radius rr): the columns are crowded near the left and right edges, where the
@@ -6203,6 +6791,7 @@ static void ui_flow_quad_round(SDL_Texture *tex, const SDL_Rect *t, int al, int 
         idx[k * 6 + 5] = k * 2 + 2;
     }
     SDL_RenderGeometry(renderer, tex, v, (NC + 1) * 2, idx, NC * 6);
+    ui_quad_fringe(tex, v, NC);
 }
 
 /* While the queue view is over a video: remember where the video is drawn full screen, and copy the frame that is on screen
@@ -6234,6 +6823,7 @@ static void ui_live_grab(VideoState *is, const SDL_Rect *rect, int flip)
     SDL_SetRenderTarget(renderer, ui_live_tex);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
+    ui_xf_video_draw(is, 1);                    /* the next video fading in, inside the tile */
     SDL_SetRenderTarget(renderer, prev);
     ui_live_ok = 1;
 }
@@ -6535,7 +7125,7 @@ static void ui_flow_draw(VideoState *is)
         double want = ui_vflow ? 1.0 : 0.0, dtv = ui_vflow_t ? av_clipd((now - ui_vflow_t) / 1000000.0, 0.0, 0.1) : 0.0;
 
         ui_vflow_t = now;
-        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * 8.0));
+        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 12.0)));      /* growing back is quicker */
         if (fabs(want - ui_vflow_p) < 0.004)
             ui_vflow_p = want;
         ui_vflow_ep = ui_vflow_p * ui_vflow_p * (3.0 - 2.0 * ui_vflow_p);
@@ -6571,7 +7161,7 @@ static void ui_flow_draw(VideoState *is)
 
         if (ui_flow_vmode && is->video_st && is->video_st->codecpar->height > 0)
             ar = av_clipd((double)is->video_st->codecpar->width / is->video_st->codecpar->height, 1.0, 1.8);
-        B = ui_flow_vmode ? FFMIN(W * 0.42, H * 0.50 * ar) : FFMIN(W * 0.30, H * 0.44);
+        B = ui_flow_vmode ? FFMIN(W * 0.52, H * 0.58 * ar) : FFMIN(W * 0.30, H * 0.44);
     }
     cx = W / 2 - (ui_flow_vmode ? 0 : (int)(B * 0.12));
     chh = (int)B;                               /* the height of the middle tile */
@@ -6598,7 +7188,7 @@ static void ui_flow_draw(VideoState *is)
                 off *= 0.55 + 0.45 * ui_vflow_ep;
                 sc *= 0.8 + 0.2 * ui_vflow_ep;
             }
-            s = B * sc;
+            s = ui_flow_slot(i, B, W, H) * sc;
             tl[e] = av_clipd(d, -1.0, 1.0) * (0.45 + 1.1 * fmod(i * 0.61803398875 + 0.3, 1.0));    /* each cover turns a little differently */
             ui_flow_rects[e].w = (int)(s * (1.0 - 0.14 * fabs(tl[e])));         /* a turned cover is narrower */
             ui_flow_rects[e].h = (int)s;
@@ -6620,8 +7210,8 @@ static void ui_flow_draw(VideoState *is)
             int i0 = av_clip((int)floor(ui_flow_pos), 0, q_count - 1), i1 = FFMIN(i0 + 1, q_count - 1), pw, h0, h1;
             double f = av_clipd(ui_flow_pos - i0, 0.0, 1.0);
 
-            ui_flow_fit(i0, (int)B, (int)B, &pw, &h0);
-            ui_flow_fit(i1, (int)B, (int)B, &pw, &h1);
+            ui_flow_fit(i0, (int)ui_flow_slot(i0, B, W, H), (int)ui_flow_slot(i0, B, W, H), &pw, &h0);
+            ui_flow_fit(i1, (int)ui_flow_slot(i1, B, W, H), (int)ui_flow_slot(i1, B, W, H), &pw, &h1);
             chh = (int)(h0 * (1.0 - f) + h1 * f);
         }
         for (pass = 4; pass >= 0; pass--) {     /* then draw them, the far ones first */
@@ -8954,6 +9544,7 @@ static void stream_cycle_channel(VideoState *is, int codec_type)
 static void toggle_full_screen(VideoState *is)
 {
     is_full_screen = !is_full_screen;
+    ui_prog_until = av_gettime_relative() + 2000000;     /* the size changes of going in and out are ours */
     SDL_SetWindowFullscreen(window, is_full_screen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 }
 
@@ -8978,19 +9569,22 @@ static void ui_aspect_tick(VideoState *is);
 static double ui_xf_t = 0.0;            /* 0 to 1: how far the crossfade has gone */
 
 /* The picture of the next video, drawn over the end of this one, a little stronger each moment */
-static void ui_xf_video_draw(VideoState *is)
+static void ui_xf_video_draw(VideoState *is, int to_tile)
 {
     VideoState *xf = xf_stream;
     Frame *np;
     SDL_Rect r;
 
     if (!xf || ui_xf_t <= 0.0 || !xf->video_st || (xf->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
-        xf->pictq.size <= 0 || ui_flow_video(is) || ui_has_cover(is))
+        xf->pictq.size <= 0 || (!to_tile && (ui_flow_video(is) || ui_has_cover(is))))
         return;
     np = frame_queue_peek_last(&xf->pictq);
     if (!np->frame || !np->frame->width || !np->width || !np->height)
         return;
-    calculate_display_rect(&r, is->xleft, is->ytop, is->width, is->height, np->width, np->height, np->sar);
+    if (to_tile)                                /* drawn into the picture of the tile: its whole area */
+        calculate_display_rect(&r, 0, 0, ui_live_w, ui_live_h, np->width, np->height, np->sar);
+    else
+        calculate_display_rect(&r, is->xleft, is->ytop, is->width, is->height, np->width, np->height, np->sar);
     set_sdl_yuv_conversion_mode(np->frame);
     if (!np->uploaded) {
         if (upload_texture(&xf->vid_texture, np->frame) < 0) {
@@ -9429,6 +10023,15 @@ static void ui_pause_tick(VideoState *is)
     int vid = is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC);
     int64_t now = av_gettime_relative();
 
+    if (ui_tile_fs_pending) {
+        if (ui_vflow)
+            ui_tile_fs_pending = 0;                         /* L was pressed again: no full screen */
+        else if (ui_vflow_p < 0.02) {
+            ui_tile_fs_pending = 0;
+            if (!is_full_screen)
+                toggle_full_screen(is);
+        }
+    }
     if (is->ui_hold) {
         if (!is->ui_held) {
             if (!is->paused)
@@ -9452,7 +10055,7 @@ static void ui_pause_tick(VideoState *is)
     } else if (!is->paused && !is->step) {
         if (seen && !unpaused_at)
             unpaused_at = now;
-        if (seen && now - unpaused_at > 250000) {          /* playing for a moment (a seek while paused flickers) */
+        if (seen && now - unpaused_at > 60000) {          /* playing for a moment (a seek while paused flickers) */
             seen = 0;
             unpaused_at = 0;
             if (ui_vflow_auto) {
@@ -9482,6 +10085,8 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         ui_sleep_tick(is);
         ui_xfade_tick(is);
         ui_pause_tick(is);
+        ui_ks_tick(is);
+        ui_th_tick(is);
         ui_cover_tick(is);
         ui_mpris_tick(is);
         if (ui_q_autoscroll())
@@ -9542,6 +10147,8 @@ static void ui_aspect_tick(VideoState *is)
     if (!ui_aspect_due || av_gettime_relative() < ui_aspect_due)
         return;
     ui_aspect_due = 0;
+    if (cfg_keep_window && ui_user_sized && av_gettime_relative() < ui_prog_until)
+        return;                                 /* our own size change (the saved window, a new item): the size stays as it is */
 
     if (is_full_screen || !is->video_st || !is->ic)
         return;
@@ -9576,6 +10183,7 @@ static void ui_aspect_tick(VideoState *is)
     }
     if (FFABS(nw - w) <= 1 && FFABS(nh - h) <= 1)
         return;
+    ui_prog_until = av_gettime_relative() + 1500000;
     SDL_SetWindowSize(window, nw, nh);
 }
 
@@ -9812,6 +10420,9 @@ static void ui_titlebar_draw(VideoState *is)
             }
         }
 
+    if (ui_on_top)                              /* a small dot: the window stays on top */
+        ui_fan(cx2 - UI_TB_BTN / 2 - 6, cy, 3, 0, 6.28318531, 16, av_clip(cfg_bar_r + 60, 0, 255),
+               av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255), 230);
     if (is && q_pos >= 0 && q_pos < q_count)    /* the name of what plays, in the middle */
         ui_q_name(q_pos, name, sizeof(name));
     else
@@ -9861,8 +10472,8 @@ static void ui_wm_menu(void)
     SDL_VERSION(&info.version);
     if (!window || !SDL_GetWindowWMInfo(window, &info))
         return;
-    if (info.subsystem != SDL_SYSWM_X11) {
-        av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the window menu is only available on X11 sessions\n");
+    if (info.subsystem != SDL_SYSWM_X11) {      /* no window manager menu to ask for: the one thing it would give us here */
+        ui_toggle_on_top();
         return;
     }
     if (!xlib) {
@@ -10044,6 +10655,8 @@ static void ui_idle_loop(void)
                 if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                     screen_width  = ev.window.data1;    /* the next video opens at this size */
                     screen_height = ev.window.data2;
+                    if (cfg_keep_window && !is_full_screen && av_gettime_relative() > ui_prog_until)
+                        ui_user_sized = 1;
                 }
                 break;
             case SDL_MOUSEWHEEL:
@@ -10091,14 +10704,20 @@ static void ui_seek_relative(VideoState *is, double incr)
         pos += incr;
         stream_seek(is, pos, incr, 1);
     } else {
-        pos = get_master_clock(is);
-        if (isnan(pos))
-            pos = (double)is->seek_pos / AV_TIME_BASE;
+        if (ui_ks_want || is->seek_req || is->prec_v || is->prec_a || av_gettime_relative() - ui_ks_issued < 200000) {
+            pos = ui_ks_target;         /* going on from the last step: the clock is not valid while a seek is on its way */
+        } else {
+            pos = get_master_clock(is);
+            if (isnan(pos))
+                pos = (double)is->seek_pos / AV_TIME_BASE;
+        }
         pos += incr;
         if (is->ic->start_time != AV_NOPTS_VALUE && pos < is->ic->start_time / (double)AV_TIME_BASE)
             pos = is->ic->start_time / (double)AV_TIME_BASE;
-        ui_precise_next = 1;
-        stream_seek(is, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
+        ui_ks_target = pos;
+        ui_ks_is = is;
+        ui_ks_want = 1;
+        is->force_refresh = 1;
     }
 }
 
@@ -10231,6 +10850,9 @@ static void event_loop(VideoState *cur_stream)
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_AUDIO);
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                 break;
+            case SDLK_o:                /* on top of the other windows, or not */
+                ui_toggle_on_top();
+                break;
             case SDLK_t:
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                 break;
@@ -10297,14 +10919,7 @@ static void event_loop(VideoState *cur_stream)
                         pos += incr;
                         stream_seek(cur_stream, pos, incr, 1);
                     } else {
-                        pos = get_master_clock(cur_stream);
-                        if (isnan(pos))
-                            pos = (double)cur_stream->seek_pos / AV_TIME_BASE;
-                        pos += incr;
-                        if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE)
-                            pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
-                        ui_precise_next = 1;
-                        stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
+                        ui_seek_relative(cur_stream, incr);
                     }
                 break;
             default:
@@ -10406,6 +11021,8 @@ static void event_loop(VideoState *cur_stream)
                     screen_width  = cur_stream->width  = event.window.data1;
                     screen_height = cur_stream->height = event.window.data2;
                     ui_aspect_due = av_gettime_relative() + 250000;
+                    if (cfg_keep_window && !is_full_screen && av_gettime_relative() > ui_prog_until)
+                        ui_user_sized = 1;      /* not our own change: the user sized or tiled the window */
                     if (cur_stream->vis_texture) {
                         SDL_DestroyTexture(cur_stream->vis_texture);
                         cur_stream->vis_texture = NULL;
@@ -10754,8 +11371,8 @@ int main(int argc, char **argv)
         q_step = 1;
         q_played[q_pos] = 1;
         q_forced = -1;
-        if (!is_full_screen)
-            screen_width = screen_height = 0;   /* window follows the next video's size */
+        if (!is_full_screen && !(cfg_keep_window && ui_user_sized))
+            screen_width = screen_height = 0;   /* window follows the next video's size (unless the user sized it) */
         startup_volume = 100;                   /* ffplay converts this each time; keep it fresh */
         input_filename = q_items[q_pos];        /* read_thread and the title use it */
         {                                       /* the window title: ffplay-custom - name, the name the title bar shows */
