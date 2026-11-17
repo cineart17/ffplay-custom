@@ -6,6 +6,15 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v32
+- Key O (always on top) is gone.
+- The picture softens a little while another window has the focus and sharpens when the mouse or focus comes back; after a window was out of sight it returns soft and clears, so the redraw is not seen.
+- Liquid glass: lens-bent edges, highlight and bright rim on the bars pill, menus and panels.
+- The seek and volume row sits in the middle of its dark glass pill.
+- Smoother held-key and drag seeking.
+- A double tap in the picture goes to complete full screen, then to the window filling the screen under the panel (corners can be dragged from there), then back.
+- In Preferences the name and the choices of the hovered row form one centred row with equal gaps, and glide in and out.
+
 ## v31
 - Background stutter: when the window manager holds a frame back (another workspace, the Multitasking view), the player stops drawing and tests once in 8 s whether the window is back; the pictures and sound go on in sync meanwhile.
 - No seek previews are made while the window is out of sight.
