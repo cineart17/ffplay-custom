@@ -609,7 +609,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1800,6238 @@
+@@ -1341,19 +1800,6266 @@
      return 0;
  }
  
@@ -666,6 +666,20 @@
 +    ui_present_slow = 0;
 +}
 +
++/* Background mode: the window is out of sight (a frame was held for long). Nothing is drawn, except one picture in
++   a while to find out whether the window is back. */
++static int ui_bg = 0;
++static int64_t ui_bg_probe = 0;         /* when a picture was last drawn, or the mode last changed */
++
++static void ui_bg_set(int on)
++{
++    if (on != ui_bg)
++        av_log(NULL, AV_LOG_WARNING, on ? "ffplay-custom: window out of sight: not drawing, the pictures and sound go on\n"
++                                        : "ffplay-custom: window in sight again\n");
++    ui_bg = on;
++    ui_bg_probe = av_gettime_relative();
++}
++
 +static void ui_present(void)
 +{
 +    int64_t t0 = av_gettime_relative(), dt;
@@ -676,6 +690,9 @@
 +        if (ui_vsync_on)
 +            av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the window manager held a frame for %d ms (window in the background?): not waiting for the screen until the window is seen again\n", (int)(dt / 1000));
 +        ui_vsync_set(0);
++        ui_bg_set(1);                   /* out of sight: video_display draws only once in a while */
++    } else if (ui_bg && ui_vsync_on && dt < 40000) {
++        ui_bg_set(0);                   /* a present with vsync on came back in time: the window is seen again */
 +    }
 +}
 +
@@ -697,6 +714,8 @@
 +{
 +    if (!ui_vsync_on)
 +        ui_vsync_set(1);                /* the mouse moved: the window is in sight again */
++    if (ui_bg)
++        ui_bg_set(0);
 +    if (cursor_hidden) {
 +        SDL_ShowCursor(1);
 +        cursor_hidden = 0;
@@ -856,7 +875,7 @@
 +    double pos, dur;
 +    int cw, ch, tw, th;
 +
-+    if (!UI_THUMBS || is->ui_thumb_id || !is->ic)
++    if (!UI_THUMBS || is->ui_thumb_id || !is->ic || ui_bg)     /* no previews for a window nobody sees */
 +        return;
 +    pos = get_master_clock(is);
 +    if (isnan(pos) || pos < 4.0)                /* not in the first seconds of an item */
@@ -6822,6 +6841,15 @@
 +    if (ui_win_unseen())
 +        return;                     /* minimized or hidden: nothing to draw */
 +
++    if (ui_bg) {                    /* out of sight: one picture in a while shows whether the window is back */
++        int64_t now = av_gettime_relative();
++
++        if (now - ui_bg_probe < 8000000)
++            return;
++        ui_bg_probe = now;
++        ui_vsync_set(1);            /* with vsync a window in sight answers within a frame; a hidden one is held again */
++    }
++
 +    if (ui_menu_open || ui_prefs_open) {
 +        ui_glass_frame(is);         /* frosted glass over the blurred picture */
 +        return;
@@ -6853,7 +6881,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +8134,14 @@
+@@ -1456,9 +8162,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -6868,7 +6896,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +8177,11 @@
+@@ -1494,9 +8205,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -6883,7 +6911,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +8442,30 @@
+@@ -1757,6 +8470,30 @@
      return 0;
  }
  
@@ -6914,7 +6942,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +8481,11 @@
+@@ -1772,6 +8509,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -6926,7 +6954,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +8755,11 @@
+@@ -2041,6 +8783,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -6938,7 +6966,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +9149,7 @@
+@@ -2430,7 +9177,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -6947,7 +6975,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +9170,36 @@
+@@ -2451,12 +9198,36 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -6986,7 +7014,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +9412,8 @@
+@@ -2669,7 +9440,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -6996,7 +7024,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +9478,13 @@
+@@ -2734,6 +9506,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -7010,7 +7038,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2946,6 +9697,10 @@
+@@ -2946,6 +9725,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -7021,7 +7049,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +9720,19 @@
+@@ -2965,6 +9748,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -7041,7 +7069,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +9768,13 @@
+@@ -3000,8 +9796,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -7057,7 +7085,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +9884,10 @@
+@@ -3111,8 +9912,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -7069,7 +7097,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3206,6 +9981,8 @@
+@@ -3206,6 +10009,8 @@
  static void toggle_full_screen(VideoState *is)
  {
      is_full_screen = !is_full_screen;
@@ -7078,7 +7106,7 @@
      SDL_SetWindowFullscreen(window, is_full_screen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
  }
  
-@@ -3221,24 +9998,565 @@
+@@ -3221,24 +10026,565 @@
      }
  }
  
@@ -7595,7 +7623,7 @@
 +        int64_t t_ = av_gettime_relative(); \
 +        call; \
 +        t_ = av_gettime_relative() - t_; \
-+        if (t_ > 40000) \
++        if (t_ > 150000) \
 +            av_log(NULL, AV_LOG_WARNING, "ffplay-custom: slow: %s took %d ms\n", #call, (int)(t_ / 1000)); \
 +    } while (0)
 +
@@ -7647,7 +7675,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +10584,643 @@
+@@ -3266,6 +10612,643 @@
  }
  
  /* handle an event sent by the GUI */
@@ -8291,7 +8319,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3276,19 +11231,47 @@
+@@ -3276,19 +11259,47 @@
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
          case SDL_KEYDOWN:
@@ -8340,7 +8368,7 @@
              case SDLK_SPACE:
                  toggle_pause(cur_stream);
                  break;
-@@ -3317,9 +11300,24 @@
+@@ -3317,9 +11328,24 @@
                  stream_cycle_channel(cur_stream, AVMEDIA_TYPE_AUDIO);
                  stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                  break;
@@ -8365,7 +8393,7 @@
              case SDLK_w:
                  if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
                      if (++cur_stream->vfilter_idx >= nb_vfilters)
-@@ -3330,30 +11328,20 @@
+@@ -3330,30 +11356,20 @@
                  }
                  break;
              case SDLK_PAGEUP:
@@ -8403,7 +8431,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,20 +11358,32 @@
+@@ -3370,20 +11386,32 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -8443,7 +8471,7 @@
              if (exit_on_mousedown) {
                  do_exit(cur_stream);
                  break;
-@@ -3399,11 +11399,17 @@
+@@ -3399,11 +11427,17 @@
                  }
              }
          case SDL_MOUSEMOTION:
@@ -8461,7 +8489,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +11446,22 @@
+@@ -3440,9 +11474,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -8470,6 +8498,7 @@
 +                case SDL_WINDOWEVENT_FOCUS_GAINED:
 +                case SDL_WINDOWEVENT_ENTER:
 +                    ui_vsync_set(1);        /* the window is in sight again */
++                    ui_bg_set(0);
 +                    cur_stream->force_refresh = 1;
 +                    break;
 +                case SDL_WINDOWEVENT_LEAVE:
@@ -8484,7 +8513,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +11471,21 @@
+@@ -3452,9 +11500,21 @@
              }
              break;
          case SDL_QUIT:
@@ -8507,7 +8536,7 @@
          default:
              break;
          }
-@@ -3526,15 +11557,11 @@
+@@ -3526,15 +11586,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -8526,7 +8555,7 @@
  
      return 0;
  }
-@@ -3678,13 +11705,7 @@
+@@ -3678,13 +11734,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -8541,7 +8570,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +11721,21 @@
+@@ -3700,6 +11750,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -8563,7 +8592,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +11753,9 @@
+@@ -3717,10 +11782,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -8575,7 +8604,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3742,15 +11777,75 @@
+@@ -3742,15 +11806,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

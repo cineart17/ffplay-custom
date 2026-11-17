@@ -6,6 +6,11 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v31
+- Background stutter: when the window manager holds a frame back (another workspace, the Multitasking view), the player stops drawing and tests once in 8 s whether the window is back; the pictures and sound go on in sync meanwhile.
+- No seek previews are made while the window is out of sight.
+- The slow-moment log only names steps over 150 ms.
+
 ## v30
 - A "Back to playing" hint shows when the queue view is away from the playing item.
 - Hover previews carry on from tile to tile without a wait.

@@ -1853,6 +1853,20 @@ static void ui_vsync_set(int on)
     ui_present_slow = 0;
 }
 
+/* Background mode: the window is out of sight (a frame was held for long). Nothing is drawn, except one picture in
+   a while to find out whether the window is back. */
+static int ui_bg = 0;
+static int64_t ui_bg_probe = 0;         /* when a picture was last drawn, or the mode last changed */
+
+static void ui_bg_set(int on)
+{
+    if (on != ui_bg)
+        av_log(NULL, AV_LOG_WARNING, on ? "ffplay-custom: window out of sight: not drawing, the pictures and sound go on\n"
+                                        : "ffplay-custom: window in sight again\n");
+    ui_bg = on;
+    ui_bg_probe = av_gettime_relative();
+}
+
 static void ui_present(void)
 {
     int64_t t0 = av_gettime_relative(), dt;
@@ -1863,6 +1877,9 @@ static void ui_present(void)
         if (ui_vsync_on)
             av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the window manager held a frame for %d ms (window in the background?): not waiting for the screen until the window is seen again\n", (int)(dt / 1000));
         ui_vsync_set(0);
+        ui_bg_set(1);                   /* out of sight: video_display draws only once in a while */
+    } else if (ui_bg && ui_vsync_on && dt < 40000) {
+        ui_bg_set(0);                   /* a present with vsync on came back in time: the window is seen again */
     }
 }
 
@@ -1884,6 +1901,8 @@ static void ui_wake(void)
 {
     if (!ui_vsync_on)
         ui_vsync_set(1);                /* the mouse moved: the window is in sight again */
+    if (ui_bg)
+        ui_bg_set(0);
     if (cursor_hidden) {
         SDL_ShowCursor(1);
         cursor_hidden = 0;
@@ -2043,7 +2062,7 @@ static void ui_th_tick(VideoState *is)
     double pos, dur;
     int cw, ch, tw, th;
 
-    if (!UI_THUMBS || is->ui_thumb_id || !is->ic)
+    if (!UI_THUMBS || is->ui_thumb_id || !is->ic || ui_bg)     /* no previews for a window nobody sees */
         return;
     pos = get_master_clock(is);
     if (isnan(pos) || pos < 4.0)                /* not in the first seconds of an item */
@@ -8009,6 +8028,15 @@ static void video_display(VideoState *is)
     if (ui_win_unseen())
         return;                     /* minimized or hidden: nothing to draw */
 
+    if (ui_bg) {                    /* out of sight: one picture in a while shows whether the window is back */
+        int64_t now = av_gettime_relative();
+
+        if (now - ui_bg_probe < 8000000)
+            return;
+        ui_bg_probe = now;
+        ui_vsync_set(1);            /* with vsync a window in sight answers within a frame; a hidden one is held again */
+    }
+
     if (ui_menu_open || ui_prefs_open) {
         ui_glass_frame(is);         /* frosted glass over the blurred picture */
         return;
@@ -10511,7 +10539,7 @@ static void ui_pause_tick(VideoState *is)
         int64_t t_ = av_gettime_relative(); \
         call; \
         t_ = av_gettime_relative() - t_; \
-        if (t_ > 40000) \
+        if (t_ > 150000) \
             av_log(NULL, AV_LOG_WARNING, "ffplay-custom: slow: %s took %d ms\n", #call, (int)(t_ / 1000)); \
     } while (0)
 
@@ -11451,6 +11479,7 @@ static void event_loop(VideoState *cur_stream)
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
                 case SDL_WINDOWEVENT_ENTER:
                     ui_vsync_set(1);        /* the window is in sight again */
+                    ui_bg_set(0);
                     cur_stream->force_refresh = 1;
                     break;
                 case SDL_WINDOWEVENT_LEAVE:
