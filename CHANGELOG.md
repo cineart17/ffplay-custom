@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v29
+- The queue view no longer snaps back to the playing item after a few seconds; swipe and preview as many tiles as you like.
+- A tap outside the tiles glides the row back to the playing item.
+
 ## v28
 - The sound goes quiet while seeking, so there is no scratching.
 - Page Up and Page Down are off; only the window corners resize.

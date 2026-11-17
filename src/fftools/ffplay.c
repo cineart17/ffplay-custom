@@ -2394,6 +2394,7 @@ static void ui_apply(VideoState *is, int x, int final)
 static int ui_flow_click(VideoState *is, int x, int y);
 static int ui_flow_motion(VideoState *is, int x, int y);
 static int ui_flow_release(VideoState *is, int x, int y);
+static int ui_flow_snap_back(VideoState *is);
 static int ui_ctrl_click(VideoState *is, int x);
 
 static int ui_mouse(VideoState *is, SDL_Event *ev)
@@ -2414,6 +2415,8 @@ static int ui_mouse(VideoState *is, SDL_Event *ev)
     if (ev->type == SDL_MOUSEBUTTONDOWN) {
         if (ev->button.button == SDL_BUTTON_LEFT && ui_flow_click(is, ev->button.x, ev->button.y))
             return 1;                       /* a click on a cover */
+        if (ev->button.button == SDL_BUTTON_LEFT && ev->button.y < is->height - UI_BAR_H && ui_flow_snap_back(is))
+            return 1;                       /* a tap outside the tiles: the row glides back to the playing item */
         if (ev->button.button != SDL_BUTTON_LEFT || ev->button.y < is->height - UI_BAR_H)
             return 0;
         x = ev->button.x;
@@ -7491,10 +7494,7 @@ static void ui_flow_draw(VideoState *is)
         ui_flow_target = q_pos;
         ui_flow_touch = 0;
     }
-    if (ui_flow_touch && now - ui_flow_touch > 5000000) {       /* 5 s after the last swipe: back to the playing item */
-        ui_flow_target = q_pos;
-        ui_flow_touch = 0;
-    }
+                                                /* the row stays where it was swiped to until a tap outside the tiles */
     ui_flow_target = av_clip(ui_flow_target, 0, q_count - 1);
     ui_flow_pos += (ui_flow_target - ui_flow_pos) * (1.0 - exp(-dt * 10.0));
     ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
@@ -7788,6 +7788,19 @@ static int ui_flow_click(VideoState *is, int x, int y)
 }
 
 /* The mouse moved with a cover held down. Returns 1 while a cover is held. */
+/* A tap that is not on a tile: if the row was moved away from the playing item, it glides back to it (and the tap is used up) */
+static int ui_flow_snap_back(VideoState *is)
+{
+    if (!ui_flow_on(is) || ui_flow_press >= 0 || ui_flow_dragging)
+        return 0;
+    if (ui_flow_target == q_pos && !ui_flow_moving)
+        return 0;
+    ui_flow_target = q_pos;
+    ui_flow_touch = 0;
+    is->force_refresh = 1;
+    return 1;
+}
+
 static int ui_flow_motion(VideoState *is, int x, int y)
 {
     ui_hov_x = x;
