@@ -6,6 +6,15 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v30
+- A "Back to playing" hint shows when the queue view is away from the playing item.
+- Hover previews carry on from tile to tile without a wait.
+- The Remember window setting is gone: the window position and size are no longer saved between runs (a resized window still keeps its size through the queue).
+- The title bar buttons moved in, so the window corners are easy to grab.
+- Smoother rounded corners on video tiles, and the neighbouring video tiles are rounded too.
+- The Preferences panel, the menu and the queue view fit small windows.
+- Slow moments in the player loop are named in the terminal (to track down stutter); the seek previews start later and take less CPU.
+
 ## v29
 - The queue view no longer snaps back to the playing item after a few seconds; swipe and preview as many tiles as you like.
 - A tap outside the tiles glides the row back to the playing item.
