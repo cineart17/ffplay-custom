@@ -6,6 +6,20 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v34
+- The picture follows the real window size: after a size change that the player missed, the picture no longer stays small in a corner.
+- Picture in picture: a title bar button makes the window a small miniplayer on top, in the video's shape at the bottom right; it can be resized and moved, the queue keeps its size, and the button again gives the window back.
+- The waveform shows the played part in the bar color, the rest dim, with the time played and the time left beside it; finer and milder.
+- Generic liquid glass for the menus, preferences and panels: the blurred picture behind a smoked veil, no rim, white text.
+
+## v33
+- Background stutter: a mouse-enter event no longer ends background mode; the blur while another window has the focus is off (the soft return from out of sight stays); the lines that start with "ffplay-custom:" are also written to ~/.cache/ffplay-custom/log.txt.
+- Liquid glass without a lens: no bent edge, no highlight, no bright rim (no outline on the seek and volume bar), an even haze and a sharper edge.
+- Preferences: the name only nudges from its margin and the choices glide in from the right with a small overshoot.
+- The queue view's waveform is one smooth wave, drawn at once and morphing to the whole track's shape.
+- Seeking: the nearest preview is shown full size while a seek key is held or the bar is dragged, until the real picture arrives; previews start after 2 s and are made faster.
+- The stock keys 0, 9, *, /, s, a, v, c, t, w, < and > are off.
+
 ## v32
 - Key O (always on top) is gone.
 - The picture softens a little while another window has the focus and sharpens when the mouse or focus comes back; after a window was out of sight it returns soft and clears, so the redraw is not seen.
