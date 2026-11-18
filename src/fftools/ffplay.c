@@ -1876,6 +1876,7 @@ static int64_t ui_bg_probe = 0;         /* when a picture was last drawn, or the
 static double ui_wblur = 0.0;           /* 0 to 1: how much of the blurred picture is mixed in */
 static double ui_wblur_t = 0.0;         /* where it is going */
 static int64_t ui_wblur_last = 0;
+#define UI_WBLUR_RETURN 0.85            /* how soft the picture is when the window comes back from out of sight, melting away (0 = no blur at all) */
 #define UI_WBLUR_AWAY 0.0               /* how soft the picture is while another window has the focus (0 = never, 1 = fully) */
 
 static void ui_bg_set(int on)
@@ -1884,7 +1885,7 @@ static void ui_bg_set(int on)
         av_log(NULL, AV_LOG_WARNING, on ? "ffplay-custom: window out of sight: not drawing, the pictures and sound go on\n"
                                         : "ffplay-custom: window in sight again\n");
     if (!on && ui_bg)
-        ui_wblur = FFMAX(ui_wblur, 0.85);       /* the picture comes back soft and sharpens, it does not jump */
+        ui_wblur = FFMAX(ui_wblur, UI_WBLUR_RETURN);    /* the picture comes back soft and sharpens, it does not jump */
     ui_bg = on;
     ui_bg_probe = av_gettime_relative();
 }
@@ -1959,7 +1960,17 @@ static void ui_log_open(void)
     ui_logf = fopen(file, size > 200000 ? "w" : "a");       /* it never grows past a few hundred KB */
     if (!ui_logf)
         return;
-    fprintf(ui_logf, "---- started: video driver %s\n", drv ? drv : "?");
+    {
+        SDL_RendererInfo ri;
+        SDL_version sv;
+        const char *st = getenv("XDG_SESSION_TYPE");
+
+        SDL_GetVersion(&sv);
+        if (!renderer || SDL_GetRendererInfo(renderer, &ri) != 0)
+            ri.name = "?";
+        fprintf(ui_logf, "---- started: session %s, video driver %s, renderer %s, SDL %d.%d.%d\n", st ? st : "?",
+                drv ? drv : "?", ri.name, sv.major, sv.minor, sv.patch);
+    }
     fflush(ui_logf);
     av_log_set_callback(ui_log_cb);
 }
@@ -4160,7 +4171,7 @@ static void ui_glass(const SDL_Rect *t, int r)
     int ink = ui_ink_dark;
 
     ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
-    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 80, 1);     /* the blurred picture, under a smoked veil */
+    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 130, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
     ui_ink_dark = ink;
 }
 
@@ -11377,7 +11388,7 @@ static void ui_tb_line(double x0, double y0, double x1, double y1, double w)
 }
 
 /* ----- picture in picture: the window as a small miniplayer on top, in a corner ----- */
-static int ui_pip = 0;
+static int ui_pip = 0, ui_pip_was_top = 0, ui_pip_was_max = 0;     /* (was_top, was_max: how the window was before the miniplayer) */
 static int ui_pip_x, ui_pip_y, ui_pip_w, ui_pip_h, ui_pip_user, ui_pip_kw, ui_pip_kh;     /* the window as it was */
 
 static void ui_pip_end(void)
@@ -11385,8 +11396,8 @@ static void ui_pip_end(void)
     if (!ui_pip || !window)
         return;
     ui_pip = 0;
-    ui_on_top = 0;
-    SDL_SetWindowAlwaysOnTop(window, SDL_FALSE);
+    ui_on_top = ui_pip_was_top;                 /* on top again only if it was before */
+    SDL_SetWindowAlwaysOnTop(window, ui_pip_was_top ? SDL_TRUE : SDL_FALSE);
     ui_fs_toggle_at = av_gettime_relative();    /* the sizes that follow are ours, not the user's */
     ui_prog_until = ui_fs_toggle_at + 2000000;
     ui_prog_w = ui_pip_w;
@@ -11396,6 +11407,8 @@ static void ui_pip_end(void)
     ui_user_sized = ui_pip_user;
     ui_keep_w = ui_pip_kw;
     ui_keep_h = ui_pip_kh;
+    if (ui_pip_was_max)
+        ui_max_set(1);                          /* it was the conventional window that fills the screen: it fills it again */
 }
 
 static void ui_pip_toggle(VideoState *is)
@@ -11423,6 +11436,7 @@ static void ui_pip_toggle(VideoState *is)
             SDL_PumpEvents();
         }
     }
+    ui_pip_was_max = ui_maxed;
     if (ui_maxed)
         ui_max_set(0);
     ui_fs_toggle_at = av_gettime_relative();
@@ -11452,6 +11466,7 @@ static void ui_pip_toggle(VideoState *is)
     SDL_SetWindowPosition(window, ub.x + ub.w - w - 24, ub.y + ub.h - h - 24);
     ui_prog_w = w;
     ui_prog_h = h;
+    ui_pip_was_top = ui_on_top;
     SDL_SetWindowAlwaysOnTop(window, SDL_TRUE);
     ui_on_top = 1;
     ui_pip = 1;
@@ -11909,7 +11924,10 @@ static void event_loop(VideoState *cur_stream)
                     ui_ctx_open = 0;
                     cur_stream->force_refresh = 1;
                 } else if (is_full_screen) {
-                    toggle_full_screen(cur_stream);
+                    ui_fs_cycle(cur_stream);            /* like a double tap: the conventional window that fills the screen */
+                    cur_stream->force_refresh = 1;
+                } else if (ui_pip) {
+                    ui_pip_end();                       /* the miniplayer ends: back to where it was entered from */
                     cur_stream->force_refresh = 1;
                 } else if (ui_maxed) {
                     ui_max_set(0);

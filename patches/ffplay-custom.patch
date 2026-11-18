@@ -620,7 +620,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1811,6729 @@
+@@ -1341,19 +1811,6740 @@
      return 0;
  }
  
@@ -691,6 +691,7 @@
 +static double ui_wblur = 0.0;           /* 0 to 1: how much of the blurred picture is mixed in */
 +static double ui_wblur_t = 0.0;         /* where it is going */
 +static int64_t ui_wblur_last = 0;
++#define UI_WBLUR_RETURN 0.85            /* how soft the picture is when the window comes back from out of sight, melting away (0 = no blur at all) */
 +#define UI_WBLUR_AWAY 0.0               /* how soft the picture is while another window has the focus (0 = never, 1 = fully) */
 +
 +static void ui_bg_set(int on)
@@ -699,7 +700,7 @@
 +        av_log(NULL, AV_LOG_WARNING, on ? "ffplay-custom: window out of sight: not drawing, the pictures and sound go on\n"
 +                                        : "ffplay-custom: window in sight again\n");
 +    if (!on && ui_bg)
-+        ui_wblur = FFMAX(ui_wblur, 0.85);       /* the picture comes back soft and sharpens, it does not jump */
++        ui_wblur = FFMAX(ui_wblur, UI_WBLUR_RETURN);    /* the picture comes back soft and sharpens, it does not jump */
 +    ui_bg = on;
 +    ui_bg_probe = av_gettime_relative();
 +}
@@ -776,7 +777,17 @@
 +    ui_logf = fopen(file, size > 200000 ? "w" : "a");       /* it never grows past a few hundred KB */
 +    if (!ui_logf)
 +        return;
-+    fprintf(ui_logf, "---- started: video driver %s\n", drv ? drv : "?");
++    {
++        SDL_RendererInfo ri;
++        SDL_version sv;
++        const char *st = getenv("XDG_SESSION_TYPE");
++
++        SDL_GetVersion(&sv);
++        if (!renderer || SDL_GetRendererInfo(renderer, &ri) != 0)
++            ri.name = "?";
++        fprintf(ui_logf, "---- started: session %s, video driver %s, renderer %s, SDL %d.%d.%d\n", st ? st : "?",
++                drv ? drv : "?", ri.name, sv.major, sv.minor, sv.patch);
++    }
 +    fflush(ui_logf);
 +    av_log_set_callback(ui_log_cb);
 +}
@@ -933,7 +944,7 @@
 +        s -= is->ic->start_time / (double)AV_TIME_BASE;
 +    return s;
 +}
- 
++
 +/* The seek bar. A file with chapters gets a bar in sections: a small gap where each chapter starts,
 +   and the section under the mouse is a little brighter. Without chapters it is the plain bar. */
 +static void ui_seek_bar(VideoState *is, SDL_Rect *sk, double frac)
@@ -2471,9 +2482,8 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -2832,7 +2842,7 @@
 +static av_unused void ui_blur_strip(int x, int y, int w, int h)
 +{
 +    SDL_Rect clip, whole;
-+
+ 
 +    if (w <= 0 || h <= 0 || !ui_blur_tex[3])
 +        return;
 +    clip.x = x;
@@ -2978,7 +2988,7 @@
 +    int ink = ui_ink_dark;
 +
 +    ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
-+    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 80, 1);     /* the blurred picture, under a smoked veil */
++    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 130, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
 +    ui_ink_dark = ink;
 +}
 +
@@ -3470,8 +3480,9 @@
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -7356,7 +7367,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +8636,14 @@
+@@ -1456,9 +8647,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -7371,7 +7382,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +8679,11 @@
+@@ -1494,9 +8690,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -7386,7 +7397,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +8944,30 @@
+@@ -1757,6 +8955,30 @@
      return 0;
  }
  
@@ -7417,7 +7428,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +8983,11 @@
+@@ -1772,6 +8994,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -7429,7 +7440,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +9257,11 @@
+@@ -2041,6 +9268,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -7441,7 +7452,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +9651,7 @@
+@@ -2430,7 +9662,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -7450,7 +7461,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +9672,36 @@
+@@ -2451,12 +9683,36 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -7489,7 +7500,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +9914,8 @@
+@@ -2669,7 +9925,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -7499,7 +7510,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +9980,13 @@
+@@ -2734,6 +9991,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -7513,7 +7524,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2946,6 +10199,10 @@
+@@ -2946,6 +10210,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -7524,7 +7535,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +10222,19 @@
+@@ -2965,6 +10233,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -7544,7 +7555,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +10270,13 @@
+@@ -3000,8 +10281,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -7560,7 +7571,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +10386,10 @@
+@@ -3111,8 +10397,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -7572,7 +7583,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +10401,7 @@
+@@ -3124,7 +10412,7 @@
      return is;
  }
  
@@ -7581,7 +7592,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +10480,69 @@
+@@ -3203,13 +10491,69 @@
  }
  
  
@@ -7628,8 +7639,9 @@
      SDL_SetWindowFullscreen(window, is_full_screen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 +    if (!is_full_screen && ui_maxed)
 +        ui_max_set(1);
-+}
-+
+ }
+ 
+-static void toggle_audio_display(VideoState *is)
 +/* A double tap in the picture: window or filled window -> complete full screen (no bars at all) -> the filled window,
 +   with the title bar and the panel of the window manager, where the corners can be dragged -> complete full screen... */
 +static void ui_fs_cycle(VideoState *is)
@@ -7645,14 +7657,13 @@
 +        is_full_screen = 1;
 +        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 +    }
- }
- 
--static void toggle_audio_display(VideoState *is)
++}
++
 +static av_unused void toggle_audio_display(VideoState *is)
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +10554,567 @@
+@@ -3221,24 +10565,567 @@
      }
  }
  
@@ -8223,7 +8234,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +11142,752 @@
+@@ -3266,6 +11153,756 @@
  }
  
  /* handle an event sent by the GUI */
@@ -8462,7 +8473,7 @@
 +}
 +
 +/* ----- picture in picture: the window as a small miniplayer on top, in a corner ----- */
-+static int ui_pip = 0;
++static int ui_pip = 0, ui_pip_was_top = 0, ui_pip_was_max = 0;     /* (was_top, was_max: how the window was before the miniplayer) */
 +static int ui_pip_x, ui_pip_y, ui_pip_w, ui_pip_h, ui_pip_user, ui_pip_kw, ui_pip_kh;     /* the window as it was */
 +
 +static void ui_pip_end(void)
@@ -8470,8 +8481,8 @@
 +    if (!ui_pip || !window)
 +        return;
 +    ui_pip = 0;
-+    ui_on_top = 0;
-+    SDL_SetWindowAlwaysOnTop(window, SDL_FALSE);
++    ui_on_top = ui_pip_was_top;                 /* on top again only if it was before */
++    SDL_SetWindowAlwaysOnTop(window, ui_pip_was_top ? SDL_TRUE : SDL_FALSE);
 +    ui_fs_toggle_at = av_gettime_relative();    /* the sizes that follow are ours, not the user's */
 +    ui_prog_until = ui_fs_toggle_at + 2000000;
 +    ui_prog_w = ui_pip_w;
@@ -8481,6 +8492,8 @@
 +    ui_user_sized = ui_pip_user;
 +    ui_keep_w = ui_pip_kw;
 +    ui_keep_h = ui_pip_kh;
++    if (ui_pip_was_max)
++        ui_max_set(1);                          /* it was the conventional window that fills the screen: it fills it again */
 +}
 +
 +static void ui_pip_toggle(VideoState *is)
@@ -8508,6 +8521,7 @@
 +            SDL_PumpEvents();
 +        }
 +    }
++    ui_pip_was_max = ui_maxed;
 +    if (ui_maxed)
 +        ui_max_set(0);
 +    ui_fs_toggle_at = av_gettime_relative();
@@ -8537,6 +8551,7 @@
 +    SDL_SetWindowPosition(window, ub.x + ub.w - w - 24, ub.y + ub.h - h - 24);
 +    ui_prog_w = w;
 +    ui_prog_h = h;
++    ui_pip_was_top = ui_on_top;
 +    SDL_SetWindowAlwaysOnTop(window, SDL_TRUE);
 +    ui_on_top = 1;
 +    ui_pip = 1;
@@ -8976,7 +8991,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3276,84 +11898,81 @@
+@@ -3276,84 +11913,84 @@
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
          case SDL_KEYDOWN:
@@ -8992,7 +9007,10 @@
 +                    ui_ctx_open = 0;
 +                    cur_stream->force_refresh = 1;
 +                } else if (is_full_screen) {
-+                    toggle_full_screen(cur_stream);
++                    ui_fs_cycle(cur_stream);            /* like a double tap: the conventional window that fills the screen */
++                    cur_stream->force_refresh = 1;
++                } else if (ui_pip) {
++                    ui_pip_end();                       /* the miniplayer ends: back to where it was entered from */
 +                    cur_stream->force_refresh = 1;
 +                } else if (ui_maxed) {
 +                    ui_max_set(0);
@@ -9108,7 +9126,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,20 +11989,32 @@
+@@ -3370,20 +12007,32 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -9148,7 +9166,7 @@
              if (exit_on_mousedown) {
                  do_exit(cur_stream);
                  break;
-@@ -3391,7 +12022,7 @@
+@@ -3391,7 +12040,7 @@
              if (event.button.button == SDL_BUTTON_LEFT) {
                  static int64_t last_mouse_left_click = 0;
                  if (av_gettime_relative() - last_mouse_left_click <= 500000) {
@@ -9157,7 +9175,7 @@
                      cur_stream->force_refresh = 1;
                      last_mouse_left_click = 0;
                  } else {
-@@ -3399,11 +12030,17 @@
+@@ -3399,11 +12048,17 @@
                  }
              }
          case SDL_MOUSEMOTION:
@@ -9175,7 +9193,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +12077,23 @@
+@@ -3440,9 +12095,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -9199,7 +9217,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +12103,21 @@
+@@ -3452,9 +12121,21 @@
              }
              break;
          case SDL_QUIT:
@@ -9222,7 +9240,7 @@
          default:
              break;
          }
-@@ -3526,15 +12189,11 @@
+@@ -3526,15 +12207,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -9241,7 +9259,7 @@
  
      return 0;
  }
-@@ -3678,13 +12337,7 @@
+@@ -3678,13 +12355,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -9256,7 +9274,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +12353,21 @@
+@@ -3700,6 +12371,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -9278,7 +9296,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +12385,9 @@
+@@ -3717,10 +12403,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -9290,7 +9308,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +12395,7 @@
+@@ -3728,7 +12413,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -9299,7 +9317,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +12409,75 @@
+@@ -3742,15 +12427,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

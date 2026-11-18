@@ -6,6 +6,12 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v35
+- The miniplayer returns to exactly the state it was entered from, including a window that filled the screen and the always-on-top setting.
+- Esc in complete full screen goes to the conventional window that fills the screen; Esc in the miniplayer leaves it.
+- F or a double tap in the miniplayer goes to complete full screen.
+- The soft return from out of sight has a switch (UI_WBLUR_RETURN), the smoked glass veil is a little stronger, and the log file starts each run with the session type, video driver, renderer and SDL version.
+
 ## v34
 - The picture follows the real window size: after a size change that the player missed, the picture no longer stays small in a corner.
 - Picture in picture: a title bar button makes the window a small miniplayer on top, in the video's shape at the bottom right; it can be resized and moved, the queue keeps its size, and the button again gives the window back.
