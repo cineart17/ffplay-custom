@@ -7,16 +7,54 @@
 #     miniplayer (about a quarter of the screen width, in the video's shape, bottom right, on top of other windows). It can
 #     be resized by its corners and moved by the title bar. The next items of the queue keep its size. The button again
 #     (or F, or a double tap) gives the window its old size and place back.
-#   * Waveform like the picture: the part that has played is in the bar color, the rest is dim, with the time played on
-#     the left and the time left on the right. Finer detail (480 steps), and a milder height.
+#   * Waveform like the reference picture: the part that has played is in the bar color, the rest is dim, with the time
+#     played on the left and the time left on the right. Finer detail (480 steps) and a milder height.
 #   * Generic liquid glass for the menus, the preferences and the panels: the blurred picture behind, a smoked veil,
 #     no rim, and white text.
-# Run from inside ~/build/ffmpeg-6.1.1, after patch_queue_v33.py. Writes the file only if every spot matches once.
-
+# Run from inside ~/build/ffmpeg-6.1.1, after patch_queue_v33.py. Writes the file only if every edit matches.
 import sys
 
-path = "fftools/ffplay.c"
-src = open(path).read()
+PATH = "fftools/ffplay.c"
+src = open(PATH).read()
+fails = []
+
+
+def patch(name, old, new):
+    global src
+    n = src.count(old)
+    if n != 1:
+        print("FAILED: %s matched %d times" % (name, n))
+        fails.append(name)
+        return
+    src = src.replace(old, new)
+    print("ok: " + name)
+
+
+def between(name, start, end, new):
+    """Replace from start (found once) up to, but not including, end."""
+    global src
+    a = src.find(start)
+    b = src.find(end, a + 1) if a >= 0 else -1
+    if a < 0 or b < 0 or src.count(start) != 1:
+        print("FAILED: %s matched %d times" % (name, src.count(start)))
+        fails.append(name)
+        return
+    src = src[:a] + new + src[b:]
+    print("ok: " + name)
+
+
+def between_incl(name, start, end, new):
+    """Replace from start (found once) up to and including end (found once)."""
+    global src
+    if src.count(start) != 1 or src.count(end) != 1:
+        print("FAILED: %s start matched %d times, end matched %d times" % (name, src.count(start), src.count(end)))
+        fails.append(name)
+        return
+    a = src.index(start)
+    b = src.index(end, a) + len(end)
+    src = src[:a] + new + src[b:]
+    print("ok: " + name)
+
 
 if "ui_pip_toggle" in src:
     print("Already applied. Nothing written.")
@@ -25,23 +63,12 @@ if "ui_scrub_draw" not in src:
     print("Apply patch_queue_v33.py first. Nothing written.")
     sys.exit(1)
 
-
-def patch(old, new, label):
-    global src
-    n = src.count(old)
-    if n != 1:
-        print("FAILED:", label, "- matched", n, "times, expected 1. Nothing written.")
-        sys.exit(1)
-    src = src.replace(old, new)
-    print("ok:", label)
-
-
-# ============================================================ the picture follows the real window size
-
-patch("""    if (ui_win_unseen())
+patch('the picture follows the real window size',
+      r'''    if (ui_win_unseen())
         return;                     /* minimized or hidden: nothing to draw */
 
-    if (ui_bg) {""", """    if (ui_win_unseen())
+    if (ui_bg) {''',
+      r'''    if (ui_win_unseen())
         return;                     /* minimized or hidden: nothing to draw */
 
     {                                           /* the window's real size wins: a picture sized for an old window sits small in a corner */
@@ -55,7 +82,7 @@ patch("""    if (ui_win_unseen())
             if (!since) {
                 since = t_;
             } else if (t_ - since > 300000) {   /* not a size change on its way: follow the window */
-                av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the picture was sized for %dx%d but the window is %dx%d: following the window\\n",
+                av_log(NULL, AV_LOG_WARNING, "ffplay-custom: the picture was sized for %dx%d but the window is %dx%d: following the window\n",
                        is->width, is->height, cw, ch);
                 screen_width = is->width = cw;
                 screen_height = is->height = ch;
@@ -70,17 +97,29 @@ patch("""    if (ui_win_unseen())
         }
     }
 
-    if (ui_bg) {""", "the picture follows the real window size")
+    if (ui_bg) {''')
+patch('full screen ends the miniplayer',
+      r'''static void toggle_full_screen(VideoState *is)
+{
+    is_full_screen = !is_full_screen;''',
+      r'''static void ui_pip_end(void);
 
-# ============================================================ picture in picture
-
-patch("static void toggle_full_screen(VideoState *is)\n{\n    is_full_screen = !is_full_screen;",
-      "static void ui_pip_end(void);\n\nstatic void toggle_full_screen(VideoState *is)\n{\n    ui_pip_end();                               /* the miniplayer ends before full screen */\n    is_full_screen = !is_full_screen;",
-      "full screen ends the miniplayer")
-patch("static void ui_fs_cycle(VideoState *is)\n{\n", "static void ui_fs_cycle(VideoState *is)\n{\n    ui_pip_end();\n", "a double tap ends the miniplayer")
-
-patch("static void ui_titlebar_draw(VideoState *is)\n{",
-"""/* ----- picture in picture: the window as a small miniplayer on top, in a corner ----- */
+static void toggle_full_screen(VideoState *is)
+{
+    ui_pip_end();                               /* the miniplayer ends before full screen */
+    is_full_screen = !is_full_screen;''')
+patch('a double tap ends the miniplayer',
+      r'''static void ui_fs_cycle(VideoState *is)
+{
+''',
+      r'''static void ui_fs_cycle(VideoState *is)
+{
+    ui_pip_end();
+''')
+patch('picture in picture: state and toggle',
+      r'''static void ui_titlebar_draw(VideoState *is)
+{''',
+      r'''/* ----- picture in picture: the window as a small miniplayer on top, in a corner ----- */
 static int ui_pip = 0;
 static int ui_pip_x, ui_pip_y, ui_pip_w, ui_pip_h, ui_pip_user, ui_pip_kw, ui_pip_kh;     /* the window as it was */
 
@@ -167,18 +206,20 @@ static void ui_pip_toggle(VideoState *is)
 }
 
 static void ui_titlebar_draw(VideoState *is)
-{""", "picture in picture: state and toggle")
-
-patch("""            ui_tb_hover = (mx >= UI_TB_PAD && mx < UI_TB_PAD + UI_TB_BTN) ? 1 :
-                          (mx >= w - UI_TB_PAD - UI_TB_BTN && mx < w - UI_TB_PAD) ? 2 : 0;""",
-      """            ui_tb_hover = (mx >= UI_TB_PAD && mx < UI_TB_PAD + UI_TB_BTN) ? 1 :
+{''')
+patch('title bar: hover on the new button',
+      r'''            ui_tb_hover = (mx >= UI_TB_PAD && mx < UI_TB_PAD + UI_TB_BTN) ? 1 :
+                          (mx >= w - UI_TB_PAD - UI_TB_BTN && mx < w - UI_TB_PAD) ? 2 : 0;''',
+      r'''            ui_tb_hover = (mx >= UI_TB_PAD && mx < UI_TB_PAD + UI_TB_BTN) ? 1 :
                           (mx >= w - UI_TB_PAD - UI_TB_BTN && mx < w - UI_TB_PAD) ? 2 :
-                          (mx >= w - UI_TB_PAD - 2 * UI_TB_BTN && mx < w - UI_TB_PAD - UI_TB_BTN) ? 3 : 0;""",
-      "title bar: hover on the new button")
-patch("ui_fan(ui_tb_hover == 1 ? cx1 : cx2, cy, 12,", "ui_fan(ui_tb_hover == 1 ? cx1 : ui_tb_hover == 3 ? cx2 - UI_TB_BTN : cx2, cy, 12,",
-      "title bar: highlight of the new button")
-patch("    if (ui_on_top)                              /* a small dot: the window stays on top */\n",
-"""    {                                           /* picture in picture: a window with a small window in its corner */
+                          (mx >= w - UI_TB_PAD - 2 * UI_TB_BTN && mx < w - UI_TB_PAD - UI_TB_BTN) ? 3 : 0;''')
+patch('title bar: highlight of the new button',
+      r'''ui_fan(ui_tb_hover == 1 ? cx1 : cx2, cy, 12,''',
+      r'''ui_fan(ui_tb_hover == 1 ? cx1 : ui_tb_hover == 3 ? cx2 - UI_TB_BTN : cx2, cy, 12,''')
+patch('title bar: the picture in picture icon',
+      r'''    if (ui_on_top)                              /* a small dot: the window stays on top */
+''',
+      r'''    {                                           /* picture in picture: a window with a small window in its corner */
         int px = cx2 - UI_TB_BTN;
         SDL_Rect corner;
 
@@ -194,33 +235,53 @@ patch("    if (ui_on_top)                              /* a small dot: the windo
         SDL_RenderFillRect(renderer, &corner);
     }
     if (ui_on_top)                              /* a small dot: the window stays on top */
-""", "title bar: the picture in picture icon")
-patch("ui_fit_text(name, 14, w - 2 * (UI_TB_PAD + UI_TB_BTN + 16));", "ui_fit_text(name, 14, w - 2 * (UI_TB_PAD + 2 * UI_TB_BTN + 16));",
-      "title bar: room for the title")
-patch("area->x >= UI_TB_PAD + UI_TB_BTN && area->x < w - UI_TB_PAD - UI_TB_BTN)",
-      "area->x >= UI_TB_PAD + UI_TB_BTN && area->x < w - UI_TB_PAD - 2 * UI_TB_BTN)",
-      "title bar: the new button is not a place to drag")
-patch("        hover = (x >= UI_TB_PAD && x < UI_TB_PAD + UI_TB_BTN) ? 1 : (x >= w - UI_TB_PAD - UI_TB_BTN && x < w - UI_TB_PAD) ? 2 : 0;",
-      "        hover = (x >= UI_TB_PAD && x < UI_TB_PAD + UI_TB_BTN) ? 1 : (x >= w - UI_TB_PAD - UI_TB_BTN && x < w - UI_TB_PAD) ? 2 :\n                (x >= w - UI_TB_PAD - 2 * UI_TB_BTN && x < w - UI_TB_PAD - UI_TB_BTN) ? 3 : 0;",
-      "title bar: click on the new button")
-patch("    } else {\n        toggle_full_screen(is);\n        if (is)",
-      "    } else if (hover == 3) {\n        ui_pip_toggle(is);\n        if (is)\n            is->force_refresh = 1;\n    } else {\n        toggle_full_screen(is);\n        if (is)",
-      "title bar: the new button toggles picture in picture")
-
-# ============================================================ the waveform like the picture
-
-patch("#define UI_WAVE_N 200", "#define UI_WAVE_N 480", "finer waveform steps")
-patch("int x0 = 24, span = W - 48, bars_ok = 1;",
-      "int lab_w = W >= 520 ? 56 : 0, x0 = 24 + lab_w, span = W - 48 - 2 * lab_w, bars_ok = 1;",
-      "room for the times beside the wave")
-patch("""            wc.r = wc.g = wc.b = 255;
-            wc.a = (Uint8)(90 * nal / 255);
-            wz = wc;
-            wz.a = 0;
-""", """            SDL_Color wp, wpz;                          /* the part that has played: the bar color */
-            double wpos = get_master_clock(is), wdur = is->ic ? is->ic->duration / (double)AV_TIME_BASE : 0.0, wfrac = 0.0;
-
+''')
+patch('title bar: room for the title',
+      r'''ui_fit_text(name, 14, w - 2 * (UI_TB_PAD + UI_TB_BTN + 16));''',
+      r'''ui_fit_text(name, 14, w - 2 * (UI_TB_PAD + 2 * UI_TB_BTN + 16));''')
+patch('title bar: the new button is not a place to drag',
+      r'''area->x >= UI_TB_PAD + UI_TB_BTN && area->x < w - UI_TB_PAD - UI_TB_BTN)''',
+      r'''area->x >= UI_TB_PAD + UI_TB_BTN && area->x < w - UI_TB_PAD - 2 * UI_TB_BTN)''')
+patch('title bar: click on the new button',
+      r'''        hover = (x >= UI_TB_PAD && x < UI_TB_PAD + UI_TB_BTN) ? 1 : (x >= w - UI_TB_PAD - UI_TB_BTN && x < w - UI_TB_PAD) ? 2 : 0;''',
+      r'''        hover = (x >= UI_TB_PAD && x < UI_TB_PAD + UI_TB_BTN) ? 1 : (x >= w - UI_TB_PAD - UI_TB_BTN && x < w - UI_TB_PAD) ? 2 :
+                (x >= w - UI_TB_PAD - 2 * UI_TB_BTN && x < w - UI_TB_PAD - UI_TB_BTN) ? 3 : 0;''')
+patch('title bar: the new button toggles picture in picture',
+      r'''    } else {
+        toggle_full_screen(is);
+        if (is)''',
+      r'''    } else if (hover == 3) {
+        ui_pip_toggle(is);
+        if (is)
+            is->force_refresh = 1;
+    } else {
+        toggle_full_screen(is);
+        if (is)''')
+patch('finer waveform steps',
+      r'''#define UI_WAVE_N 200''',
+      r'''#define UI_WAVE_N 480''')
+patch('room for the times beside the wave',
+      r'''int x0 = 24, span = W - 48, bars_ok = 1;''',
+      r'''int lab_w = W >= 520 ? 56 : 0, x0 = 24 + lab_w, span = W - 48 - 2 * lab_w, bars_ok = 1;''')
+patch('glass: a smoked veil',
+      r'''ui_liquid(t, r, 225 + cfg_bar_r / 10, 228 + cfg_bar_g / 10, 232 + cfg_bar_b / 10, 165, 1);''',
+      r'''ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 80, 1);     /* the blurred picture, under a smoked veil */''')
+patch('glass: white text in the preferences',
+      r'''    ui_ink_dark = 1;                            /* the preferences are light glass: dark text on them */''',
+      r'''    ui_ink_dark = 0;                            /* the glass is smoked: white text on it */''')
+patch('glass: white text on the card',
+      r'''    ui_ink_dark = !ui_idle;                     /* the card is light glass: dark text on it (the idle screen has no card) */''',
+      r'''    ui_ink_dark = 0;                            /* white text on the card */''')
+patch('glass: white text on the side panels',
+      r'''    ui_ink_dark = 1;                            /* the side panels are light glass too */''',
+      r'''    ui_ink_dark = 0;                            /* white text on the side panels */''')
+patch('the played part and the times: the playhead',
+      r'''            double grow, half = FFMAX(maxh / 2.0 - 1.5, 1.0);
+''',
+      r'''            double grow, half = FFMAX(FFMIN(maxh, 120) / 2.0 - 1.5, 1.0);      /* a milder height */
             static double wkeep = 0.0;                  /* the last good time, for the moments the clock has none */
+            double wpos = get_master_clock(is), wdur = is->ic ? is->ic->duration / (double)AV_TIME_BASE : 0.0, wfrac = 0.0;
+            int wpr = av_clip(cfg_bar_r + 40, 0, 255), wpg = av_clip(cfg_bar_g + 40, 0, 255), wpb = av_clip(cfg_bar_b + 40, 0, 255);
 
             if (isnan(wpos))
                 wpos = wkeep;
@@ -229,32 +290,29 @@ patch("""            wc.r = wc.g = wc.b = 255;
             if (is->ic && is->ic->start_time != AV_NOPTS_VALUE)
                 wpos -= is->ic->start_time / (double)AV_TIME_BASE;
             if (wdur > 0.0)
-                wfrac = av_clipd(wpos / wdur, 0.0, 1.0);
-            wc.r = wc.g = wc.b = 255;
-            wc.a = (Uint8)(90 * nal / 255);
-            wz = wc;
-            wz.a = 0;
-            wp.r = (Uint8)av_clip(cfg_bar_r + 40, 0, 255);
-            wp.g = (Uint8)av_clip(cfg_bar_g + 40, 0, 255);
-            wp.b = (Uint8)av_clip(cfg_bar_b + 40, 0, 255);
-            wp.a = (Uint8)(235 * nal / 255);
-            wpz = wp;
-            wpz.a = 0;
-""", "the played part has its own color")
-patch("hh = 1.5 + av_clipd(cur[c], 0.0, 1.0) * (maxh - 3) / 2.0;",
-      "hh = 1.5 + av_clipd(cur[c], 0.0, 1.0) * (FFMIN(maxh, 120) - 3) / 2.0;      /* a milder height */",
-      "a milder waveform")
-patch("""                v[0].color = wz;
-                v[1].color = wc;
-                v[2].color = wc;
-                v[3].color = wz;
-""", """                v[0].color = u <= wfrac ? wpz : wz;
-                v[1].color = u <= wfrac ? wp : wc;
-                v[2].color = u <= wfrac ? wp : wc;
-                v[3].color = u <= wfrac ? wpz : wz;
-""", "the played part is drawn in the bar color")
-patch("            wlast = now;\n        }\n",
-"""            wlast = now;
+                wfrac = av_clipd(wpos / wdur, 0.0, 1.0);        /* how much of the track has played */
+''')
+patch('the played part: which columns',
+      r'''                double hh = 1.5 + av_clipd(h2[c], 0.0, 1.0) * half * grow;
+                int k;
+''',
+      r'''                double hh = 1.5 + av_clipd(h2[c], 0.0, 1.0) * half * grow;
+                int k;
+                int pl = c <= (int)(wfrac * (nc - 1));          /* the part that has played: the bar color */
+''')
+patch('the played part is in the bar color',
+      r'''                    wf[c * 4 + k].color.r = wf[c * 4 + k].color.g = wf[c * 4 + k].color.b = 255;
+                    wf[c * 4 + k].color.a = (k == 0 || k == 3) ? 0 : (Uint8)ab;
+''',
+      r'''                    wf[c * 4 + k].color.r = pl ? wpr : 255;
+                    wf[c * 4 + k].color.g = pl ? wpg : 255;
+                    wf[c * 4 + k].color.b = pl ? wpb : 255;
+                    wf[c * 4 + k].color.a = (k == 0 || k == 3) ? 0 : (Uint8)(pl ? 235 * nal / 255 : ab);
+''')
+patch('the times beside the wave',
+      r'''            SDL_RenderGeometry(renderer, NULL, wf, nc * 4, wi, ni);
+''',
+      r'''            SDL_RenderGeometry(renderer, NULL, wf, nc * 4, wi, ni);
             if (lab_w) {                                /* the time played on the left, the time left on the right */
                 char t1[32], t2[32];
                 int e1 = (int)FFMAX(wpos, 0.0), e2 = (int)FFMAX(wdur - wpos, 0.0);
@@ -270,20 +328,10 @@ patch("            wlast = now;\n        }\n",
                 ui_label_c(24 + lab_w / 2, mid, t1, 15, 235, 235, 235, nal);
                 ui_label_c(W - 24 - lab_w / 2, mid, t2, 15, 235, 235, 235, nal);
             }
-        }
-""", "the times beside the wave")
+''')
 
-# ============================================================ generic liquid glass
-
-patch("ui_liquid(t, r, 225 + cfg_bar_r / 10, 228 + cfg_bar_g / 10, 232 + cfg_bar_b / 10, 165, 1);",
-      "ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 80, 1);     /* the blurred picture, under a smoked veil */",
-      "glass: a smoked veil")
-patch("    ui_ink_dark = 1;                            /* the preferences are light glass: dark text on them */",
-      "    ui_ink_dark = 0;                            /* the glass is smoked: white text on it */", "glass: white text in the preferences")
-patch("    ui_ink_dark = !ui_idle;                     /* the card is light glass: dark text on it (the idle screen has no card) */",
-      "    ui_ink_dark = 0;                            /* white text on the card */", "glass: white text on the card")
-patch("    ui_ink_dark = 1;                            /* the side panels are light glass too */",
-      "    ui_ink_dark = 0;                            /* white text on the side panels */", "glass: white text on the side panels")
-
-open(path, "w").write(src)
-print("Patched fftools/ffplay.c")
+if fails:
+    print("\n%d edits did not apply. Nothing was written." % len(fails))
+    sys.exit(1)
+open(PATH, "w").write(src)
+print("Patched " + PATH)

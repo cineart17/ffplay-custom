@@ -9,6 +9,19 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 ## v34
 - The picture follows the real window size: after a size change that the player missed, the picture no longer stays small in a corner.
 - Picture in picture: a title bar button makes the window a small miniplayer on top, in the video's shape at the bottom right; it can be resized and moved, the queue keeps its size, and the button again gives the window back.
+- The waveform shows the played part in the bar color, the rest dim, with the time played and the time left beside it.
+- Generic liquid glass for the menus, preferences and panels: the blurred picture behind a smoked veil, no rim, white text.
+
+## v33
+- Background stutter: the player never waits for the screen (vsync is always off) and draws at most about 60 pictures a second, so a window the window manager does not show can no longer hold it back. The screen-sleep switch changes only after 1.5 s. The blur while another window has the focus is off. The lines that start with "ffplay-custom:" are also written to ~/.cache/ffplay-custom/log.txt.
+- Liquid glass without a lens: no bent edge, no highlight, no bright rim, an even haze, a lighter blur and a sharper edge.
+- Preferences: the name nudges and the choices slide in one after another, with a soft pill under the one the mouse is on.
+- The queue view's waveform is one smooth shape, there at once; the track that plays is read before the view opens.
+- Tiles that are alive: they glide in, rise under the mouse, and the playing song breathes.
+- Seeking: the nearest preview is shown full size while a seek key is held or the bar is dragged, until the real picture arrives.
+- The stock keys 0, 9, *, /, s, a, v, c, t, w, < and > are off.## v34
+- The picture follows the real window size: after a size change that the player missed, the picture no longer stays small in a corner.
+- Picture in picture: a title bar button makes the window a small miniplayer on top, in the video's shape at the bottom right; it can be resized and moved, the queue keeps its size, and the button again gives the window back.
 - The waveform shows the played part in the bar color, the rest dim, with the time played and the time left beside it; finer and milder.
 - Generic liquid glass for the menus, preferences and panels: the blurred picture behind a smoked veil, no rim, white text.
 
