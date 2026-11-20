@@ -992,6 +992,11 @@ static void ui_tv_draw(VideoState *is);
 static int ui_tv_click(VideoState *is, int x, int y);
 static int ui_tv_motion(VideoState *is, int x, int y);
 static int ui_tv_release(VideoState *is, int x, int y);
+static int ui_tvc_open = 0;                             /* v39: the right-click menu of a tile is showing */
+static void ui_pv_request(const char *path);            /* the tile that plays while the mouse rests on it */
+static void ui_tv_hover_preview(int hs, int hi, int64_t now);
+static void ui_tvc_draw(VideoState *is);
+static int ui_tv_ctx_mouse(VideoState *is, SDL_Event *ev);
 static int ui_tv_moving = 0;                            /* 1 = the tiled view is animating: keep drawing */
 static int ui_grow_on = 0;                              /* 1 = the miniplayer is growing into full screen */
 static void ui_pip_save(void);
@@ -1067,8 +1072,7 @@ static void video_image_display(VideoState *is)
     ui_live_grab(is, &rect, vp->flip_v);    /* over a video: copy the frame, the tile shows it */
     if (!ui_has_cover(is) && !ui_flow_video(is))    /* a cover is drawn by the queue view instead (ui_flow_draw) */
     {
-        if (!ui_scrub_draw(is, &rect))          /* while seeking: the nearest preview first, the real picture when it is there */
-            SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
+        SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
         ui_xf_video_draw(is, 0);                /* the next video fades in over the end of this one */
     }
     set_sdl_yuv_conversion_mode(NULL);
@@ -1389,9 +1393,6 @@ static const char *settings_default_text =
     "# ffplay-custom settings. Lines starting with # are ignored.\n"
     "# Change a value, save the file, and start ffplay-custom again.\n"
     "\n"
-    "# Seconds the Left/Right arrow keys jump\n"
-    "seek_seconds = 2\n"
-    "\n"
     "# Volume change for each Up/Down press (the scale is 0 to 128)\n"
     "volume_step = 2\n"
     "\n"
@@ -1453,7 +1454,7 @@ static void settings_load(void)
                 *p = ' ';
 
         if (sscanf(line, " seek_seconds = %lf", &d) == 1)
-            cfg_seek = av_clipd(d, 0.1, 600.0);
+            (void)d;                    /* v39: the seek step is ffplay's own now; an old line is ignored */
         else if (sscanf(line, " volume_step = %d", &n) == 1)
             cfg_vol_step = av_clip(n, 1, 32);
         else if (sscanf(line, " hide_seconds = %lf", &d) == 1)
@@ -1506,7 +1507,6 @@ static void settings_save(void)
         return;
     fprintf(f, "# ffplay-custom settings. Lines starting with # are ignored.\n");
     fprintf(f, "# Change a value, save the file, and start ffplay-custom again.\n\n");
-    fprintf(f, "# Seconds the Left/Right arrow keys jump\nseek_seconds = %g\n\n", cfg_seek);
     fprintf(f, "# Volume change for each Up/Down press (the scale is 0 to 128)\nvolume_step = %d\n\n", cfg_vol_step);
     fprintf(f, "# Seconds without mouse movement before the bars and cursor hide\nhide_seconds = %g\n\n",
             cfg_hide_delay / 1000000.0);
@@ -1848,7 +1848,7 @@ static int video_open(VideoState *is)
 
 static double get_master_clock(VideoState *is);
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
-#define UI_PRECISE_SEEK 1                /* 0 = seek to the nearest key frame, as before */
+#define UI_PRECISE_SEEK 0                /* 0 = seek to the nearest key frame, as ffplay does (v39) */
 static int ui_precise_next = 0;         /* 1 = the next seek must land exactly on its time */
 
 static int ui_hover = 0;   /* 1 = mouse is over the bar strip */
@@ -2398,7 +2398,7 @@ static void ui_draw(VideoState *is)
         else if (!seek_by_bytes && is->seek_req)
             pos = is->seek_pos / (double)AV_TIME_BASE;
         else if (isnan(pos))
-            pos = (!seek_by_bytes && is->seek_pos) ? is->seek_pos / (double)AV_TIME_BASE : ui_last_pos;
+            pos = !seek_by_bytes ? is->seek_pos / (double)AV_TIME_BASE : ui_last_pos;      /* v39: also a seek to the very start */
         else
             ui_last_pos = pos;
         if (!isnan(pos)) {
@@ -4579,7 +4579,7 @@ static void ui_blobs(void)
 }
 
 /* ----- the Preferences panel ----- */
-#define UI_PREF_ROWS 8
+#define UI_PREF_ROWS 7
 #define UI_PREF_ROW ui_pr_row   /* height of one row (smaller in a small window) */
 #define UI_PREF_HEAD ui_pr_head /* space for the title */
 #define UI_PREF_FOOT ui_pr_foot /* space for the hint at the bottom (none in a small window) */
@@ -4595,7 +4595,7 @@ static int ui_prefs_anim = 0;       /* 1 = a row is still gliding */
 static double ui_prefs_w = 600.0;   /* the width of the panel: it grows when a row needs more room, and goes back */
 
 static const char *ui_pref_name[UI_PREF_ROWS] = {
-    "Seek step", "Volume step", "Hide bars after", "Start fullscreen",
+    "Volume step", "Hide bars after", "Start fullscreen",
     "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action"
 };
 static const struct { const char *name; int r, g, b; } ui_colors[] = {
@@ -4611,7 +4611,7 @@ static const int ui_hide_steps[] = { 1, 2, 3, 4, 5, 8, 10, 15, 30 };
 /* Rows with arrows (the others switch On/Off when clicked) */
 static av_unused int ui_pref_arrows(int row)
 {
-    return row == 0 || row == 1 || row == 2 || row == 4 || row == 7;
+    return row == 0 || row == 1 || row == 3 || row == 6;
 }
 
 /* Which color preset is in use? -1 if the color was set by hand in the file */
@@ -4641,6 +4641,7 @@ static void ui_pref_value(int row, char *out, size_t size)
 {
     int i;
 
+    row++;                                      /* v39: the Seek step row is gone, the numbers below keep their old meaning */
     switch (row) {
     case 0: snprintf(out, size, "%g s", cfg_seek); break;
     case 1: snprintf(out, size, "%d", cfg_vol_step); break;
@@ -4664,6 +4665,7 @@ static int ui_pref_choices(int row, const char *names[10], char store[10][20], i
     int n = 0, i, b = 0;
 
     *sel = -1;
+    row++;
     switch (row) {
     case 0:
         for (i = 0; i < 9; i++) {
@@ -4786,6 +4788,7 @@ static int ui_pref_chip_at(int row, const SDL_Rect *p, int x, int y)
 /* Pick choice number idx of a row and save the file */
 static void ui_pref_choose(int row, int idx)
 {
+    row++;
     switch (row) {
     case 0: cfg_seek = ui_seek_choices[av_clip(idx, 0, 8)]; break;
     case 1: cfg_vol_step = ui_vol_steps[av_clip(idx, 0, 4)]; break;
@@ -4809,6 +4812,7 @@ static av_unused void ui_pref_change(int row, int dir)
 {
     int i;
 
+    row++;
     switch (row) {
     case 0: {
         static const double st[] = { 0.3, 0.5, 1, 2, 3, 5, 10, 15, 30 };
@@ -4921,7 +4925,7 @@ static void ui_prefs_draw(void)
         se = e * e * (3.0 - 2.0 * e);
         k = 1.0 - se;                           /* how much of the value is still showing */
         {
-            static const int pic[UI_PREF_ROWS] = { UI_IC_SKIP, UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP,
+            static const int pic[UI_PREF_ROWS] = { UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP,
                                                    UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE };
 
             ui_icon(pic[i], p.x + ui_pr_mg + (int)(10 * se), cy, av_clip(ui_pr_px, 14, 22), 245, 245, 245,
@@ -4934,7 +4938,7 @@ static void ui_prefs_draw(void)
             ui_pref_value(i, value, sizeof(value));
             vw = ui_text_width(value, ui_pr_px);
             vx = x_right - vw;
-            if (i == 4) {
+            if (i == 3) {
                 sw.x = vx - 26;                 /* a dot in the chosen color */
                 sw.y = cy - 8;
                 sw.w = 16;
@@ -5410,6 +5414,8 @@ static int ui_q_keep(const SDL_Rect *m, const SDL_Rect *p, int x, int y, int row
     return x >= x0 && x < x1 && y >= row_top - 6 && y < row_top + UI_MENU_ROW + 6;
 }
 
+static void ui_tv_clean(char *s);
+
 /* Is this text (the inside of a bracket) only download or codec information, like 1080p_25fps_H264? */
 static int ui_q_is_codec_info(const char *s)
 {
@@ -5443,6 +5449,14 @@ static void ui_q_name(int idx, char *out, size_t size)
         if (!open || open == out || len == 0 || out[len - 1] != ')' || !ui_q_is_codec_info(open + 1))
             break;
         *open = 0;
+    }
+    {                                           /* v39: (Official Music Video), [1080P HD] and the like are left out, as in the tiled view */
+        char keep[320];
+
+        snprintf(keep, sizeof(keep), "%s", out);
+        ui_tv_clean(out);
+        if (!out[0])
+            snprintf(out, size, "%s", keep);
     }
 }
 
@@ -6359,6 +6373,8 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
 
     if (ui_prefs_open)
         return ui_prefs_mouse(is, ev);
+    if (ui_tv_ctx_mouse(is, ev))                /* v39: right-click on a tile of the tiled view */
+        return 1;
 
     ui_menu_last_move = av_gettime_relative();     /* the popup closes when the mouse rests */
 
@@ -8264,7 +8280,7 @@ static int ui_tv_act = 0;                       /* searching: the section the ke
 static int64_t ui_tv_t = 0, ui_tv_born = 0, ui_tv_seen = 0;
 static UiTvHitRect ui_tvh[128];
 static int ui_tvh_n = 0;
-static double ui_tv_lift[64];
+static double ui_tv_lift[4096];
 static int ui_tv_press = -1, ui_tv_pressec = -2, ui_tv_drag = 0, ui_tv_px = 0, ui_tv_py = 0;   /* the tile the mouse went down on */
 static int ui_tv_secy[3][2];                    /* the top and bottom of each section (for the wheel) */
 static const char * const ui_tv_title[3] = { "In this queue", "In Music", "In Videos" };
@@ -8424,10 +8440,130 @@ static void ui_tv_scan_start(void)
 }
 
 /* ---- names and matching ---- */
+static int ui_tv_lc(int c);
+
+/* v39: words that say nothing about the song, when they are all there is inside brackets: (Official Music Video), [1080P HD] ... */
+static int ui_tv_noise_tok(const char *t)
+{
+    static const char * const w[] = { "official", "music", "video", "videos", "audio", "lyric", "lyrics", "lyrical", "visualizer",
+                                      "visualiser", "hd", "hq", "uhd", "fhd", "mv", "explicit", "full", "hdr", "remastered",
+                                      "remaster", "h264", "h265", "hevc", "x264", "x265", "av1", "vp9", "aac", "mp3", "opus", NULL };
+    int i, n = 0;
+
+    for (i = 0; w[i]; i++)
+        if (!strcmp(t, w[i]))
+            return 1;
+    while (t[n] >= '0' && t[n] <= '9')
+        n++;
+    if (n > 0 && t[n]) {                        /* 1080p, 60fps, 4k, 128kbit, 44khz */
+        const char *u = t + n;
+
+        return !strcmp(u, "p") || !strcmp(u, "fps") || !strcmp(u, "k") || !strcmp(u, "kbit") || !strcmp(u, "kbps") ||
+               !strcmp(u, "hz") || !strcmp(u, "khz") || !strcmp(u, "bit");
+    }
+    return 0;
+}
+
+static int ui_tv_word_c(int c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
+}
+
+static int ui_tv_noise_group(const char *s, int n)
+{
+    char tok[32];
+    int i = 0, k, words = 0;
+
+    while (i < n) {
+        while (i < n && !ui_tv_word_c((unsigned char)s[i]))
+            i++;
+        if (i >= n)
+            break;
+        k = 0;
+        while (i < n && ui_tv_word_c((unsigned char)s[i])) {
+            if (k < 30)
+                tok[k++] = (char)ui_tv_lc((unsigned char)s[i]);
+            i++;
+        }
+        tok[k] = 0;
+        if (!ui_tv_noise_tok(tok))
+            return 0;
+        words++;
+    }
+    return words > 0;
+}
+
+static void ui_tv_clean(char *s)
+{
+    static const char * const tail[] = { "official music video", "official lyric video", "official video", "official audio",
+                                         "official visualizer", "music video", "lyric video", "lyrics video", NULL };
+    char o[512];
+    int n = (int)strlen(s), i = 0, k = 0, j, again;
+
+    if (n <= 0 || n >= (int)sizeof(o) - 2)
+        return;
+    for (j = 3; j + 3 <= n; j++) {              /* a telephone company's promo at the end: "SMS 'SKIZA 123' to 811", "To subscribe to skiza..." */
+        if (s[j - 1] != ' ')
+            continue;
+        if ((!av_strncasecmp(s + j, "sms", 3) && (j + 3 == n || s[j + 3] == ' ' || s[j + 3] == '\'' || s[j + 3] == '[')) ||
+            !av_strncasecmp(s + j, "to subcribe", 11) || !av_strncasecmp(s + j, "to subscribe", 12)) {
+            n = j;
+            s[n] = 0;
+            break;
+        }
+    }
+    while (i < n) {
+        char c = s[i];
+
+        if (c == '(' || c == '[' || c == '{') {
+            char close = c == '(' ? ')' : c == '[' ? ']' : '}';
+
+            j = i + 1;
+            while (j < n && s[j] != close)
+                j++;
+            if (j < n && ui_tv_noise_group(s + i + 1, j - i - 1)) {         /* the group goes, with the space before it */
+                while (k > 0 && o[k - 1] == ' ')
+                    k--;
+                i = j + 1;
+                while (i < n && s[i] == ' ')
+                    i++;
+                if (k > 0 && i < n)
+                    o[k++] = ' ';
+                continue;
+            }
+        }
+        o[k++] = s[i++];
+    }
+    o[k] = 0;
+    do {                                        /* the same words without brackets, at the end of the title */
+        again = 0;
+        while (k > 0 && (o[k - 1] == ' ' || o[k - 1] == '-' || o[k - 1] == '|' || o[k - 1] == '~' || o[k - 1] == ':' || o[k - 1] == '_'))
+            o[--k] = 0;
+        for (i = 0; tail[i]; i++) {
+            int tl = (int)strlen(tail[i]), p = k - tl, q;
+
+            if (p < 1 || (o[p - 1] != ' ' && o[p - 1] != '-'))
+                continue;
+            for (q = 0; q < tl && ui_tv_lc((unsigned char)o[p + q]) == tail[i][q]; q++)
+                ;
+            if (q == tl) {
+                k = p;
+                o[k] = 0;
+                again = 1;
+                break;
+            }
+        }
+    } while (again);
+    while (k > 0 && (o[k - 1] == ' ' || o[k - 1] == '-' || o[k - 1] == '|' || o[k - 1] == '~' || o[k - 1] == ':' || o[k - 1] == '_'))
+        o[--k] = 0;
+    if (k > 0)
+        memcpy(s, o, k + 1);
+}
+
 static void ui_tv_name(const char *s, char *out, size_t size)
 {
     const char *slash = strrchr(s, '/');
-    char *dot, *open;
+    char *dot, *open, keep[320];
     size_t len;
 
     snprintf(out, size, "%s", slash ? slash + 1 : s);
@@ -8443,6 +8579,10 @@ static void ui_tv_name(const char *s, char *out, size_t size)
             break;
         *open = 0;
     }
+    snprintf(keep, sizeof(keep), "%s", out);
+    ui_tv_clean(out);
+    if (!out[0])
+        snprintf(out, size, "%s", keep);
 }
 
 static int ui_tv_lc(int c)
@@ -8652,6 +8792,8 @@ static void ui_tv_reset(VideoState *is, int64_t now)
     ui_tv_born = now;
     ui_tv_press = -1;
     ui_tv_drag = 0;
+    ui_tvc_open = 0;
+    ui_pv_request(NULL);
 }
 
 static void ui_tv_enter(VideoState *is)
@@ -8684,6 +8826,8 @@ static void ui_tv_exit(VideoState *is)
     ui_tv_searching = 0;
     for (s = 0; s < 3; s++)
         ui_tv_sec_free(&ui_tv_sec[s]);
+    ui_tvc_open = 0;
+    ui_pv_request(NULL);
     if (ui_flow_video(is) && ui_vflow) {
         ui_vflow_auto = 0;
         ui_vflow_set(is, 0);                    /* the video grows back */
@@ -8777,6 +8921,11 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
     if ((ev->key.keysym.mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) || (k >= SDLK_F1 && k <= SDLK_F12))
         return 0;
     ui_wake();
+    if (ui_tvc_open) {                          /* v39: the menu of a tile: any key closes it, Esc is used up by that */
+        ui_tvc_open = 0;
+        if (k == SDLK_ESCAPE)
+            return 1;
+    }
     switch (k) {
     case SDLK_ESCAPE:                           /* Esc closes the search, Esc again closes the view */
         if (ui_tv_q[0] || ui_tv_searching) {
@@ -8894,7 +9043,7 @@ static void ui_tv_swipe_x(VideoState *is, double ax)
     ui_tv_step(is, steps, 0);
 }
 
-/* Up and down: one row (or section) for each swipe */
+/* Fingers down: the view closes (animated, like Esc). Up and down no longer move tiles: the arrow keys do. */
 static void ui_tv_swipe_y(VideoState *is, double ay)
 {
     static double acc = 0.0;
@@ -8910,9 +9059,11 @@ static void ui_tv_swipe_y(VideoState *is, double ay)
     }
     last = now;
     acc += ay;
-    if (!lock && FFABS(acc) >= 2.0) {
+    if (!lock && acc * UI_TV_UP_SIGN <= -1.2) {
         lock = 1;
-        ui_tv_step(is, 0, acc * UI_TV_UP_SIGN > 0 ? 1 : -1);
+        ui_tv_gest_until = now + 700000;
+        ui_tv_exit(is);
+        is->force_refresh = 1;
     }
 }
 
@@ -9064,6 +9215,281 @@ static void ui_tv_tile(const char *path, const SDL_Rect *t, int al, int md)
         ui_flow_quad_round(tex, t, al, md, 0.0, FFMIN(t->w, t->h) / 11);
 }
 
+/* ---- v39: a video tile plays (picture only, at the video's own rate) while the mouse rests on it ----
+   One thread decodes the one file that is wanted, scales it to at most 512 px and hands the newest picture over. Nothing else is
+   decoded, so it stays light. It stops by itself when the view has not asked for a picture for 2 seconds. */
+#define UI_PV_SIDE 512
+
+typedef struct {
+    SDL_Thread *th;
+    SDL_mutex *mu;
+    SDL_cond *cv;
+    volatile int quit;
+    volatile int gen;                           /* changes with every new request */
+    char want[4096];                            /* the file that is wanted ("" = none) */
+    char dead[4096];                            /* a file that could not be played: it is not tried again at once */
+    uint8_t *pix;                               /* the newest picture (RGBA) */
+    int w, h, fresh, cgen;                      /* its size; 1 = not yet in the texture; the request it belongs to */
+    int64_t last_get;                           /* when the view last asked for it */
+    SDL_Texture *tex;
+    int tex_w, tex_h;
+} UiPv;
+
+static UiPv ui_pv;
+
+static int ui_pv_gone(int gen)
+{
+    return ui_pv.quit || ui_pv.gen != gen;
+}
+
+/* Plays the file until it is not wanted any more. Returns 1 if the file could not be played. */
+static int ui_pv_run(const char *path, int gen)
+{
+    AVFormatContext *ic = NULL;
+    AVCodecContext *cc = NULL;
+    const AVCodec *codec = NULL;
+    AVFrame *fr = NULL;
+    AVPacket *pkt = NULL;
+    struct SwsContext *sws = NULL;
+    AVDictionary *opts = NULL;
+    uint8_t *buf = NULL;
+    double tb, dar, last_pts = 0.0, pts0;
+    int64_t wall0 = 0;
+    int vs, tw, th, i, failed = 1, shown = 0, restarts = 0;
+
+    av_dict_set(&opts, "probesize", "2000000", 0);
+    av_dict_set(&opts, "analyzeduration", "1000000", 0);
+    if (avformat_open_input(&ic, path, NULL, &opts) < 0) {
+        av_dict_free(&opts);
+        return 1;
+    }
+    av_dict_free(&opts);
+    if (avformat_find_stream_info(ic, NULL) < 0)
+        goto end;
+    vs = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    if (vs < 0 || !codec || (ic->streams[vs]->disposition & AV_DISPOSITION_ATTACHED_PIC))
+        goto end;
+    cc = avcodec_alloc_context3(codec);
+    if (!cc || avcodec_parameters_to_context(cc, ic->streams[vs]->codecpar) < 0)
+        goto end;
+    cc->thread_count = 2;
+    cc->skip_loop_filter = AVDISCARD_ALL;       /* a small picture: the loop filter is not worth the time */
+    cc->flags2 |= AV_CODEC_FLAG2_FAST;
+    if (avcodec_open2(cc, codec, NULL) < 0)
+        goto end;
+    for (i = 0; i < (int)ic->nb_streams; i++)
+        if (i != vs)
+            ic->streams[i]->discard = AVDISCARD_ALL;
+    if (cc->width <= 0 || cc->height <= 0)
+        goto end;
+    {
+        AVRational sar = av_guess_sample_aspect_ratio(ic, ic->streams[vs], NULL);
+
+        dar = (double)cc->width / cc->height * (sar.num > 0 && sar.den > 0 ? av_q2d(sar) : 1.0);
+    }
+    if (dar >= 1.0) {
+        tw = UI_PV_SIDE;
+        th = (int)(UI_PV_SIDE / dar);
+    } else {
+        th = UI_PV_SIDE;
+        tw = (int)(UI_PV_SIDE * dar);
+    }
+    tw = FFMAX(tw & ~1, 2);
+    th = FFMAX(th & ~1, 2);
+    fr = av_frame_alloc();
+    pkt = av_packet_alloc();
+    buf = av_malloc((size_t)tw * th * 4);
+    if (!fr || !pkt || !buf)
+        goto end;
+    tb = av_q2d(ic->streams[vs]->time_base);
+    failed = 0;
+
+    while (!ui_pv_gone(gen) && restarts < 4) {
+        int ret;
+        double dur = ic->duration > 0 ? ic->duration / (double)AV_TIME_BASE : 0.0;
+        int64_t from = (dur > 12.0 ? (int64_t)(dur * 0.25 * AV_TIME_BASE) : 0) + (ic->start_time != AV_NOPTS_VALUE ? ic->start_time : 0);
+
+        if (av_seek_frame(ic, -1, from, AVSEEK_FLAG_BACKWARD) < 0)
+            av_seek_frame(ic, -1, 0, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(cc);
+        pts0 = -1.0;
+        restarts++;
+        for (;;) {
+            if (ui_pv_gone(gen))
+                break;
+            if (av_gettime_relative() - ui_pv.last_get > 2000000)
+                goto end;                       /* nobody is looking */
+            ret = av_read_frame(ic, pkt);
+            if (ret < 0)
+                break;                          /* the end: from the start again */
+            if (pkt->stream_index != vs) {
+                av_packet_unref(pkt);
+                continue;
+            }
+            ret = avcodec_send_packet(cc, pkt);
+            av_packet_unref(pkt);
+            if (ret < 0 && ret != AVERROR(EAGAIN))
+                continue;
+            while (!ui_pv_gone(gen) && avcodec_receive_frame(cc, fr) >= 0) {
+                int64_t now = av_gettime_relative(), target;
+                double pts = fr->best_effort_timestamp == AV_NOPTS_VALUE ? last_pts + 0.04 : fr->best_effort_timestamp * tb;
+                uint8_t *dst[4] = { buf, NULL, NULL, NULL };
+                int ls[4] = { tw * 4, 0, 0, 0 };
+
+                last_pts = pts;
+                if (pts0 < 0.0 || pts < pts0 - 0.5) {
+                    pts0 = pts;
+                    wall0 = now;
+                }
+                target = wall0 + (int64_t)((pts - pts0) * 1000000.0);
+                if (now > target + 250000) {    /* behind: this picture is skipped, and the clock starts again if it is far behind */
+                    if (now > target + 1000000) {
+                        pts0 = pts;
+                        wall0 = now;
+                    }
+                    av_frame_unref(fr);
+                    continue;
+                }
+                while (!ui_pv_gone(gen) && (now = av_gettime_relative()) < target)
+                    av_usleep((unsigned)FFMIN(target - now, 4000));
+                if (ui_pv_gone(gen)) {
+                    av_frame_unref(fr);
+                    break;
+                }
+                sws = sws_getCachedContext(sws, fr->width, fr->height, (enum AVPixelFormat)fr->format, tw, th, AV_PIX_FMT_RGBA,
+                                           SWS_FAST_BILINEAR, NULL, NULL, NULL);
+                if (!sws) {
+                    av_frame_unref(fr);
+                    failed = 1;
+                    goto end;
+                }
+                sws_scale(sws, (const uint8_t * const *)fr->data, fr->linesize, 0, fr->height, dst, ls);
+                av_frame_unref(fr);
+                SDL_LockMutex(ui_pv.mu);
+                if (ui_pv.gen == gen) {
+                    memcpy(ui_pv.pix, buf, (size_t)tw * th * 4);
+                    ui_pv.w = tw;
+                    ui_pv.h = th;
+                    ui_pv.fresh = 1;
+                    ui_pv.cgen = gen;
+                }
+                SDL_UnlockMutex(ui_pv.mu);
+                shown = 1;
+                restarts = 0;
+            }
+        }
+    }
+    if (!shown)
+        failed = 1;
+end:
+    sws_freeContext(sws);
+    av_free(buf);
+    av_packet_free(&pkt);
+    av_frame_free(&fr);
+    avcodec_free_context(&cc);
+    avformat_close_input(&ic);
+    return failed;
+}
+
+static int ui_pv_thread(void *arg)
+{
+    char path[4096];
+    int gen, failed;
+
+    (void)arg;
+    for (;;) {
+        SDL_LockMutex(ui_pv.mu);
+        while (!ui_pv.quit && !ui_pv.want[0])
+            SDL_CondWait(ui_pv.cv, ui_pv.mu);
+        if (ui_pv.quit) {
+            SDL_UnlockMutex(ui_pv.mu);
+            return 0;
+        }
+        snprintf(path, sizeof(path), "%s", ui_pv.want);
+        gen = ui_pv.gen;
+        SDL_UnlockMutex(ui_pv.mu);
+        failed = ui_pv_run(path, gen);
+        SDL_LockMutex(ui_pv.mu);
+        if (ui_pv.gen == gen) {                 /* it ended by itself: wait for the next request */
+            ui_pv.want[0] = 0;
+            if (failed)
+                snprintf(ui_pv.dead, sizeof(ui_pv.dead), "%s", path);
+        }
+        SDL_UnlockMutex(ui_pv.mu);
+    }
+}
+
+/* path = the file to play, NULL = stop */
+static void ui_pv_request(const char *path)
+{
+    if (!ui_pv.mu) {
+        if (!path)
+            return;
+        ui_pv.mu = SDL_CreateMutex();
+        ui_pv.cv = SDL_CreateCond();
+        ui_pv.pix = av_malloc((size_t)UI_PV_SIDE * UI_PV_SIDE * 4);
+        if (!ui_pv.mu || !ui_pv.cv || !ui_pv.pix)
+            return;
+        ui_pv.th = SDL_CreateThread(ui_pv_thread, "ffplay-custom preview", NULL);
+        if (!ui_pv.th) {
+            ui_pv.mu = NULL;                    /* no thread: no previews (a later try starts again) */
+            return;
+        }
+        SDL_DetachThread(ui_pv.th);
+    }
+    SDL_LockMutex(ui_pv.mu);
+    if (!path) {
+        if (ui_pv.want[0]) {
+            ui_pv.want[0] = 0;
+            ui_pv.gen++;
+        }
+    } else if (strcmp(path, ui_pv.want) && strcmp(path, ui_pv.dead)) {
+        snprintf(ui_pv.want, sizeof(ui_pv.want), "%s", path);
+        ui_pv.dead[0] = 0;
+        ui_pv.gen++;
+        ui_pv.fresh = 0;
+        ui_pv.last_get = av_gettime_relative();
+        SDL_CondSignal(ui_pv.cv);
+    }
+    SDL_UnlockMutex(ui_pv.mu);
+}
+
+/* The texture of the picture that plays for this file, or NULL if it is not the one that is wanted (or has no picture yet) */
+static SDL_Texture *ui_pv_get(const char *path, int *w, int *h)
+{
+    SDL_Texture *t = NULL;
+
+    if (!ui_pv.mu || !path)
+        return NULL;
+    SDL_LockMutex(ui_pv.mu);
+    if (ui_pv.want[0] && !strcmp(path, ui_pv.want)) {
+        ui_pv.last_get = av_gettime_relative();
+        if (ui_pv.cgen == ui_pv.gen && ui_pv.w > 0 && ui_pv.h > 0) {
+            if (!ui_pv.tex || ui_pv.tex_w != ui_pv.w || ui_pv.tex_h != ui_pv.h) {
+                if (ui_pv.tex)
+                    SDL_DestroyTexture(ui_pv.tex);
+                ui_pv.tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, ui_pv.w, ui_pv.h);
+                ui_pv.tex_w = ui_pv.w;
+                ui_pv.tex_h = ui_pv.h;
+                ui_pv.fresh = 1;
+                if (ui_pv.tex)
+                    SDL_SetTextureBlendMode(ui_pv.tex, SDL_BLENDMODE_BLEND);
+            }
+            if (ui_pv.tex && ui_pv.fresh) {
+                SDL_UpdateTexture(ui_pv.tex, NULL, ui_pv.pix, ui_pv.w * 4);
+                ui_pv.fresh = 0;
+            }
+            if (ui_pv.tex) {
+                t = ui_pv.tex;
+                *w = ui_pv.w;
+                *h = ui_pv.h;
+            }
+        }
+    }
+    SDL_UnlockMutex(ui_pv.mu);
+    return t;
+}
+
 static int ui_tv_is_playing(const char *path)
 {
     return path && q_pos >= 0 && q_pos < q_count && !strcmp(path, q_items[q_pos]);
@@ -9106,9 +9532,17 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
 
     K = (int)(W / (2.0 * pitch)) + 3;
     k0 = FFMAX((int)floor(R->pos) - K, 0);
-    k1 = FFMIN((int)ceil(R->pos) + K, R->count - 1);
+    k1 = FFMIN((int)ceil(R->pos) + 2 * K, R->count - 1);     /* v39: a row that starts at the far left shows more tiles to the right */
     for (c = k0; c <= k1 && no < 48; c++) {
-        double dc = c - R->pos, d = sqrt(dc * dc + (1.15 * R->rowd) * (1.15 * R->rowd));
+        double dc = c - R->pos, dce = dc, d;
+
+        if (R->sec < 0 && R->rowd > 0.0) {      /* v39: the shift to the far left (see below) moves the tile, so its size and brightness follow */
+            double pmax = W / 2.0 / pitch - 0.6;
+
+            if (pmax > 0.0 && R->pos < pmax)
+                dce -= (pmax - R->pos) * FFMIN(R->rowd, 1.0);
+        }
+        d = sqrt(dce * dce + (1.15 * R->rowd) * (1.15 * R->rowd));
 
         ord[no].d = d;
         ord[no].c = c;
@@ -9119,6 +9553,8 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         int c = ord[o].c, item = R->sec < 0 ? R->first + c : c, play, nw, nh, al, md, tx, ty, ti;
         double d = ord[o].d, dc = c - R->pos, sc, x, en, ease, x1, lf, goal, asp, bw, bh;
         const char *path = ui_tv_row_path(R, c);
+        SDL_Texture *ptex;
+        int pw = 0, ph = 0;
         const unsigned char *hl = R->sec >= 0 ? ui_tv_sec[R->sec].h[c].hl : NULL;
         SDL_Rect tile;
         char name[320];
@@ -9131,6 +9567,9 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         bw = R->sw * sc;
         bh = R->sh * sc;
         asp = (play && vm && ui_live_ok && ui_live_rect.h > 0) ? (double)ui_live_rect.w / ui_live_rect.h : ui_cov_aspect(path);
+        ptex = play ? NULL : ui_pv_get(path, &pw, &ph);         /* v39: the picture that plays under the mouse */
+        if (ptex && asp <= 0.0)
+            asp = (double)pw / ph;
         if (asp <= 0.0) {
             nw = nh = (int)FFMIN(bw, bh);       /* a cover or a file icon is square */
         } else if (bw / bh > asp) {
@@ -9141,6 +9580,12 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
             nh = (int)(bw / asp);
         }
         x = R->cx + dc * pitch + (dc < 0 ? -1.0 : 1.0) * FFMIN(fabs(dc), 1.0) * pitch * 0.12;
+        if (R->sec < 0 && R->rowd > 0.0) {      /* v39: the rows that are not in focus start at the far left, until the focus has gone far enough */
+            double pmax = W / 2.0 / pitch - 0.6;
+
+            if (pmax > 0.0 && R->pos < pmax)
+                x -= (pmax - R->pos) * pitch * FFMIN(R->rowd, 1.0);
+        }
         if (vm && R->sec < 0 && !play)          /* over a video: the other tiles slide out from behind the one that plays */
             x = R->cx + (x - R->cx) * (0.55 + 0.45 * ep);
         en = (R->sec < 0 && vm) ? 1.0 : av_clipd(((now - R->born) / 1000000.0 - fabs(dc) * 0.05) / 0.45, 0.0, 1.0);
@@ -9154,7 +9599,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         if (vm && R->sec < 0 && !play)
             al = (int)(al * ep);                /* the other tiles fade in while the video shrinks */
         al = (int)(al * en);
-        ti = (R->sec < 0 ? item : c + 20 * (R->sec + 1)) & 63;
+        ti = (int)(((R->sec + 1) * 1031 + item) % 4093);        /* v39: one slot for each tile */
         goal = (hov_sec == R->sec && hov_item == item) ? 1.0 : 0.0;
         lf = ui_tv_lift[ti];
         lf += (goal - lf) * (1.0 - exp(-dt * 14.0));
@@ -9163,6 +9608,8 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         else
             ui_tv_moving = 1;
         ui_tv_lift[ti] = lf;
+        al += (int)((255 - al) * lf);           /* v39: the tile under the mouse brightens like the one that plays */
+        md += (int)((255 - md) * lf);
         nw += (int)(nw * 0.05 * lf);
         nh += (int)(nh * 0.05 * lf);
         tile.w = nw;
@@ -9186,6 +9633,9 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
                 lr.h = ui_live_rect.h + (int)((tile.h - ui_live_rect.h) * ep);
             }
             ui_flow_quad_round(ui_live_tex, &lr, al, md, 0.0, (int)(FFMIN(lr.w, lr.h) / 11.0 * ep));
+        } else if (ptex) {                      /* it plays under the mouse */
+            ui_flow_quad_round(ptex, &tile, al, md, 0.0, FFMIN(tile.w, tile.h) / 11);
+            ui_tv_moving = 1;
         } else {
             ui_tv_tile(path, &tile, al, md);
         }
@@ -9205,7 +9655,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
                                    av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * al / 255.0));
             ui_pill(&pdot);
         }
-        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(al * (d < 0.6 ? 1.0 : 0.75)));
+        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(al * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
         if (ui_tvh_n < 128) {
             ui_tvh[ui_tvh_n].r.x = tile.x;
             ui_tvh[ui_tvh_n].r.y = tile.y;
@@ -9276,6 +9726,9 @@ static void ui_tv_draw(VideoState *is)
     if (ui_hov_x >= 0 && !ui_menu_open && !ui_prefs_open && !ui_tv_drag)
         if (!ui_tv_hit_at(ui_hov_x, ui_hov_y, &hs, &hi))
             hs = -2;
+    if (ui_tvc_open)
+        hs = -2;                                /* v39: no tile is under the mouse while its menu is open */
+    ui_tv_hover_preview(hs, hi, now);
     ui_tvh_n = 0;
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -9340,7 +9793,7 @@ static void ui_tv_draw(VideoState *is)
             row.pos = FFMIN(ui_tv_pos, row.count - 1);
             row.cx = W / 2;
             row.cy = ctop + (int)(rp * (rr + 0.5)) - 8;
-            row.sw = (int)(sh * 1.75);
+            row.sw = (int)(sh * (ui_tv_audio ? 1.22 : 1.75));        /* v39: music tiles sit closer */
             row.sh = (int)sh;
             row.rowd = fabs(rr - ui_tv_row);
             row.born = ui_tv_born;
@@ -9395,7 +9848,7 @@ static void ui_tv_draw(VideoState *is)
             row.pos = sec->pos;
             row.cx = (int)(W * 0.30);
             row.cy = top + 24 + sh / 2 + 6;
-            row.sw = (int)(sh * 1.75);
+            row.sw = (int)(sh * (s == 1 ? 1.22 : 1.75));            /* v39: music tiles sit closer */
             row.sh = sh;
             row.rowd = s == ui_tv_act ? 0.0 : 0.45;
             row.born = sec->born;
@@ -9431,6 +9884,8 @@ static void ui_tv_draw(VideoState *is)
         }
         ui_tv_moving = 1;
     }
+    if (ui_tvc_open)
+        ui_tvc_draw(is);
     SDL_RenderSetClipRect(renderer, NULL);
 }
 
@@ -9491,6 +9946,215 @@ static int ui_tv_release(VideoState *is, int x, int y)
         }
     }
     ui_tv_moving = 1;
+    is->force_refresh = 1;
+    return 1;
+}
+
+/* ---- v39: what is under the mouse in the view: the tile that plays, and the right-click menu ---- */
+static const char *ui_tv_item_path(int sec, int item)
+{
+    if (item < 0)
+        return NULL;
+    if (sec == -1)
+        return item < q_count ? q_items[item] : NULL;
+    if (sec >= 0 && sec < 3 && item < ui_tv_sec[sec].n)
+        return ui_tv_sec[sec].h[item].path;
+    return NULL;
+}
+
+static int ui_tv_ext_is(const char *path, int kind)
+{
+    const char *dot = strrchr(path, '.'), *slash = strrchr(path, '/');
+    int i;
+
+    if (!dot || (slash && dot < slash))
+        return 0;
+    for (i = 0; ui_tv_ext[kind][i]; i++)
+        if (!av_strcasecmp(dot + 1, ui_tv_ext[kind][i]))
+            return 1;
+    return 0;
+}
+
+/* The video under the mouse starts to play in its tile after a short rest, and stops a moment after the mouse has left it */
+static void ui_tv_hover_preview(int hs, int hi, int64_t now)
+{
+    static char dw[4096];
+    static int64_t since = 0, lost = 0;
+    const char *p = hs >= -1 ? ui_tv_item_path(hs, hi) : NULL;
+
+    if (p && ui_tv_ext_is(p, 1) && !ui_tv_is_playing(p)) {
+        lost = 0;
+        if (strcmp(p, dw)) {
+            snprintf(dw, sizeof(dw), "%s", p);
+            since = now;
+        }
+        if (now - since >= 300000)
+            ui_pv_request(p);
+        else
+            ui_tv_moving = 1;
+    } else {
+        dw[0] = 0;
+        if (!lost)
+            lost = now;
+        if (now - lost > 400000)
+            ui_pv_request(NULL);
+    }
+}
+
+#define UI_TVC_ROW 38
+static int ui_tvc_x = 0, ui_tvc_y = 0, ui_tvc_hover = -1, ui_tvc_n = 0, ui_tvc_act[4];
+static char ui_tvc_path[4096];
+static const char * const ui_tvc_label[4] = { "Play", "Play next", "Add to queue", "Remove from queue" };
+
+static int ui_tv_qindex(const char *path)       /* the place of a file in the queue (the same file under another name counts), or -1 */
+{
+    int i, idx = -1;
+    char *rp;
+
+    for (i = 0; i < q_count && idx < 0; i++)
+        if (!strcmp(q_items[i], path))
+            idx = i;
+    if (idx >= 0)
+        return idx;
+    rp = realpath(path, NULL);
+    for (i = 0; rp && i < q_count && idx < 0; i++) {
+        char *rq = realpath(q_items[i], NULL);
+
+        if (rq && !strcmp(rq, rp))
+            idx = i;
+        free(rq);
+    }
+    free(rp);
+    return idx;
+}
+
+static SDL_Rect ui_tvc_rect(int ww, int wh)
+{
+    SDL_Rect r;
+    int i, w = 0;
+
+    for (i = 0; i < ui_tvc_n; i++)
+        w = FFMAX(w, ui_text_width(ui_tvc_label[ui_tvc_act[i]], 18));
+    r.w = w + 56;
+    r.h = ui_tvc_n * UI_TVC_ROW + 16;
+    r.x = av_clip(ui_tvc_x, 8, FFMAX(ww - r.w - 8, 8));
+    r.y = av_clip(ui_tvc_y, 8, FFMAX(wh - r.h - 8, 8));
+    return r;
+}
+
+static int ui_tvc_hit(const SDL_Rect *r, int x, int y)
+{
+    if (x < r->x || x >= r->x + r->w || y < r->y + 8 || y >= r->y + 8 + ui_tvc_n * UI_TVC_ROW)
+        return -1;
+    return (y - r->y - 8) / UI_TVC_ROW;
+}
+
+static void ui_tvc_draw(VideoState *is)
+{
+    SDL_Rect r = ui_tvc_rect(is->width, is->height);
+    int i, ry;
+
+    ui_glass(&r, 16);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    for (i = 0; i < ui_tvc_n; i++) {
+        ry = r.y + 8 + i * UI_TVC_ROW;
+        ui_label(r.x + 30, ry + UI_TVC_ROW / 2, ui_tvc_label[ui_tvc_act[i]], 18, 240, 240, 240, i == ui_tvc_hover ? 255 : 205);
+        if (i == ui_tvc_hover) {
+            SDL_Rect dot = { r.x + 13, ry + UI_TVC_ROW / 2 - 3, 6, 6 };
+
+            SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
+                                   av_clip(cfg_bar_b + 40, 0, 255), 235);
+            ui_pill(&dot);
+        }
+    }
+    ui_tv_moving = 1;
+}
+
+static void ui_tvc_do(VideoState *is, int act)
+{
+    char path[4096];
+    int idx;
+
+    snprintf(path, sizeof(path), "%s", ui_tvc_path);
+    ui_tvc_open = 0;
+    ui_tvc_hover = -1;
+    switch (act) {
+    case 0:                                     /* Play */
+        ui_tv_play(is, path);
+        break;
+    case 1:                                     /* Play next: right after the item that plays */
+        idx = ui_tv_qindex(path);
+        if (idx < 0) {
+            queue_add(path);
+            idx = ui_tv_qindex(path);
+        }
+        if (idx >= 0 && idx != q_pos && idx != q_pos + 1)
+            queue_move(idx, idx > q_pos ? q_pos + 1 : q_pos);
+        break;
+    case 2:                                     /* Add to queue */
+        if (ui_tv_qindex(path) < 0)
+            queue_add(path);
+        break;
+    default:                                    /* Remove from queue */
+        idx = ui_tv_qindex(path);
+        if (idx >= 0 && idx != q_pos)
+            queue_remove(idx);
+        break;
+    }
+    if (ui_tv_q[0] && act != 0)
+        ui_tv_search();                         /* "In this queue" follows what changed */
+    ui_tv_moving = 1;
+    is->force_refresh = 1;
+}
+
+/* The mouse, while the view is open: right-click on a tile opens its menu, and the menu owns the mouse until it closes */
+static int ui_tv_ctx_mouse(VideoState *is, SDL_Event *ev)
+{
+    SDL_Rect r;
+    int x, y, hit, sec, item, qi, n = 0;
+    const char *p;
+
+    if (ev->type != SDL_MOUSEBUTTONDOWN && ev->type != SDL_MOUSEMOTION)
+        return 0;
+    if (!ui_tv_on(is)) {
+        ui_tvc_open = 0;
+        return 0;
+    }
+    x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
+    y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
+    if (ui_tvc_open) {
+        r = ui_tvc_rect(is->width, is->height);
+        hit = ui_tvc_hit(&r, x, y);
+        if (ev->type == SDL_MOUSEMOTION)
+            ui_tvc_hover = hit;
+        else if (ev->button.button == SDL_BUTTON_LEFT && hit >= 0)
+            ui_tvc_do(is, ui_tvc_act[hit]);
+        else
+            ui_tvc_open = 0;                    /* a click anywhere else closes it */
+        ui_wake();
+        is->force_refresh = 1;
+        return 1;
+    }
+    if (ev->type != SDL_MOUSEBUTTONDOWN || ev->button.button != SDL_BUTTON_RIGHT || ui_tv_drag)
+        return 0;
+    if (!ui_tv_hit_at(x, y, &sec, &item) || !(p = ui_tv_item_path(sec, item)))
+        return 0;
+    snprintf(ui_tvc_path, sizeof(ui_tvc_path), "%s", p);
+    qi = ui_tv_qindex(p);
+    ui_tvc_act[n++] = 0;                        /* Play */
+    if (qi < 0 || (qi != q_pos && qi != q_pos + 1))
+        ui_tvc_act[n++] = 1;                    /* Play next */
+    if (qi < 0)
+        ui_tvc_act[n++] = 2;                    /* Add to queue */
+    else if (qi != q_pos)
+        ui_tvc_act[n++] = 3;                    /* Remove from queue */
+    ui_tvc_n = n;
+    ui_tvc_x = x;
+    ui_tvc_y = y;
+    ui_tvc_hover = -1;
+    ui_tvc_open = 1;
+    ui_pv_request(NULL);
+    ui_wake();
     is->force_refresh = 1;
     return 1;
 }
@@ -11400,19 +12064,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
         } else {
             is->level = 0.0f;
         }
-        {                                       /* quiet while seeking: the cut and restarted sound would scratch */
-            static float duck = 1.0f;
-            int64_t tnow = av_gettime_relative();
-            float want = (is->seek_req || (is->prec_a && tnow - ui_seek_last < 1500000) || tnow - ui_seek_last < 260000) ? 0.0f : 1.0f;
-
-            if (want < duck)
-                duck = FFMAX(want, duck * 0.3f);        /* down within a few milliseconds */
-            else
-                duck = FFMIN(want, duck + 0.10f);       /* back up over about a third of a second */
-            if (duck < 0.01f)
-                duck = 0.0f;
-            vol = (int)(is->audio_volume * is->xf_gain * ui_sleep_gain * duck + 0.5f);
-        }
+        vol = (int)(is->audio_volume * is->xf_gain * ui_sleep_gain + 0.5f);        /* v39: no quiet gap around a seek, as in ffplay */
         if (!is->muted && is->audio_buf && vol == SDL_MIX_MAXVOLUME)
             memcpy(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1);
         else {
@@ -13780,19 +14432,13 @@ static void ui_seek_relative(VideoState *is, double incr)
         pos += incr;
         stream_seek(is, pos, incr, 1);
     } else {
-        if (ui_ks_want || is->seek_req || is->prec_v || is->prec_a || av_gettime_relative() - ui_ks_issued < 200000) {
-            pos = ui_ks_target;         /* going on from the last step: the clock is not valid while a seek is on its way */
-        } else {
-            pos = get_master_clock(is);
-            if (isnan(pos))
-                pos = (double)is->seek_pos / AV_TIME_BASE;
-        }
+        pos = get_master_clock(is);             /* v39: exactly what ffplay does */
+        if (isnan(pos))
+            pos = (double)is->seek_pos / AV_TIME_BASE;
         pos += incr;
         if (is->ic->start_time != AV_NOPTS_VALUE && pos < is->ic->start_time / (double)AV_TIME_BASE)
             pos = is->ic->start_time / (double)AV_TIME_BASE;
-        ui_ks_target = pos;
-        ui_ks_is = is;
-        ui_ks_want = 1;
+        stream_seek(is, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
         is->force_refresh = 1;
     }
 }
@@ -13840,7 +14486,7 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
         ay = -ay;
     }
     if (FFABS(ax) > FFABS(ay)) {                /* a sideways swipe: along the tiles of the view, or through the queue */
-        if (ui_tv_cap(is))
+        if (ui_tv_on(is))                       /* v39: also the view a pause opened */
             ui_tv_swipe_x(is, ax);
         else
             ui_flow_swipe(is, ev);
@@ -13849,10 +14495,12 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
     }
     if (ay == 0.0)
         return;
+    if (av_gettime_relative() < ui_tv_gest_until)
+        return;                                 /* v39: the end of the swipe that opened or closed the view moves nothing */
     zone = ui_wheel_zone(is);
     act = zone == 1 ? 0 : zone == 2 ? 1 : cfg_wheel;            /* 0 = seek, 1 = volume, 2 = navigation */
-    if (act == 2 || (!zone && ui_tv_cap(is))) {                 /* with the view open, up and down belong to it */
-        if (ui_tv_cap(is))
+    if (act == 2 || (!zone && ui_tv_on(is))) {                  /* with the view open, a swipe down closes it */
+        if (ui_tv_on(is))
             ui_tv_swipe_y(is, ay);
         else
             ui_tv_swipe_open(is, ay);
@@ -13871,7 +14519,7 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
         for (i = 0; i < FFABS(steps); i++)
             update_volume(is, steps > 0 ? -1 : 1, SDL_VOLUME_STEP);        /* reversed */
     } else {
-        ui_seek_relative(is, steps * cfg_seek);
+        ui_seek_relative(is, steps * (seek_interval ? seek_interval : 10.0));        /* v39: the same step as the arrow keys */
     }
     ui_wake();                                  /* the bars show what happened */
     is->force_refresh = 1;
@@ -13967,10 +14615,10 @@ static void event_loop(VideoState *cur_stream)
             case SDLK_PAGEDOWN:
                 break;                  /* Page Up and Page Down do nothing */
             case SDLK_LEFT:
-                incr = -cfg_seek;
+                incr = seek_interval ? -seek_interval : -10.0;
                 goto do_seek;
             case SDLK_RIGHT:
-                incr = cfg_seek;
+                incr = seek_interval ? seek_interval : 10.0;
                 goto do_seek;
             case SDLK_UP:
                 update_volume(cur_stream, 1, SDL_VOLUME_STEP);

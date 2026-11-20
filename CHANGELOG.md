@@ -6,6 +6,14 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v39
+- Seeking is ffplay's own again: the Left and Right keys jump 10 s (or -seek_interval), the seek lands on the key frame, and there is no quiet gap, no preview picture and no held-key stepping. The wheel on the seek bar uses the same step. The "Seek step" preference and seek_seconds are gone (an old line is ignored). The live frames when the mouse is on the seek bar stay.
+- Tiled view: a video tile plays at its own frame rate while the mouse rests on it (only that tile is decoded), the tile under the mouse brightens like the one that plays, music tiles sit closer together, and the rows that are not in focus start at the far left.
+- Titles: (Official Music Video), [1080P HD], (Audio), (Lyrics), "SMS ..." promos and the like are left out in the tiles, the search, the queue panel and the title bar.
+- Right-click on a tile: Play, Play next, Add to queue, Remove from queue.
+- A two finger swipe down closes the tiled view (animated); up opens it. Up and down inside the view no longer move tiles (the arrow keys do).
+- A view opened by a pause scrolls, swipes and has the tile menu, and the previews play there too.
+
 ## v38
 - New preference, Scroll action, with Seek, Volume and Navigation. It decides what the mouse wheel and a two finger swipe up or down do. Navigation: a swipe up opens the tiled queue view; inside it, up and down move between rows or sections and sideways moves along them. On the volume bar the scroll always changes the volume and on the seek bar it always seeks. Saved as scroll_action in settings.conf (the old mouse_wheel line is ignored).
 - The swipe up now opens the tiled view: v37 guessed touchpad or wheel from fractional scroll values, which this session does not send.
