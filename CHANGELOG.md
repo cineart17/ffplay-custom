@@ -6,6 +6,12 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v38
+- New preference, Scroll action, with Seek, Volume and Navigation. It decides what the mouse wheel and a two finger swipe up or down do. Navigation: a swipe up opens the tiled queue view; inside it, up and down move between rows or sections and sideways moves along them. On the volume bar the scroll always changes the volume and on the seek bar it always seeks. Saved as scroll_action in settings.conf (the old mouse_wheel line is ignored).
+- The swipe up now opens the tiled view: v37 guessed touchpad or wheel from fractional scroll values, which this session does not send.
+- Searching: In this queue, In Music and In Videos each move on their own, the one the mouse is resting on.
+- Bigger tiles in the rows and in the search sections.
+
 ## v37
 - The miniplayer remembers where you left it (position and width), also between runs (~/.config/ffplay-custom/miniplayer.conf). A spot that is off every screen falls back to the bottom right corner.
 - Full screen from the miniplayer: the window grows out of the miniplayer in one eased motion instead of jumping, and the miniplayer's always on top and show on all workspaces are switched off. Esc from that full screen still goes back to the window the miniplayer was entered from.

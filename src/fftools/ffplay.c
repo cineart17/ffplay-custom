@@ -982,7 +982,9 @@ static int ui_live_w = 0, ui_live_h = 0;
 static void ui_flow_swipe(VideoState *is, SDL_Event *ev);
 static int ui_tv_on(VideoState *is);                    /* v37: the tiled queue view */
 static int ui_tv_cap(VideoState *is);
-static int ui_tv_wheel(VideoState *is, SDL_Event *ev);
+static void ui_tv_swipe_x(VideoState *is, double ax);               /* v38: the parts of a swipe that belong to the tiled view */
+static void ui_tv_swipe_y(VideoState *is, double ay);
+static int ui_tv_swipe_open(VideoState *is, double ay);
 static int ui_tv_key(VideoState *is, SDL_Event *ev);
 static int ui_tv_text(VideoState *is, const char *t);
 static void ui_tv_enter(VideoState *is);
@@ -1355,7 +1357,7 @@ static int     cfg_fullscreen = 1;          /* 1 = open fullscreen */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
 static int     cfg_remember_volume = 1;     /* 1 = remember the volume between runs */
 static int     cfg_quit_when_done = 0;      /* 1 = quit when the queue ends */
-static int     cfg_wheel = 0;               /* mouse wheel: 0 = off, 1 = volume, 2 = seek */
+static int     cfg_wheel = 2;               /* scroll action (wheel and two finger swipes): 0 = seek, 1 = volume, 2 = navigation */
 static int     cfg_crossfade = 0;           /* seconds the end of one item and the start of the next overlap (0 to 10) */
 static char    cfg_music_dir[400] = "";     /* v37: where the tiled view searches for music (empty = the system's Music folder) */
 static char    cfg_video_dir[400] = "";     /* and for videos (empty = the system's Videos folder) */
@@ -1408,8 +1410,8 @@ static const char *settings_default_text =
     "# 1 = quit when the queue ends, 0 = show the idle screen\n"
     "quit_when_done = 0\n"
     "\n"
-    "# Mouse wheel (and touchpad swipe): 0 = off, 1 = volume, 2 = seek by the seek step\n"
-    "mouse_wheel = 0\n"
+    "# Scroll action (mouse wheel and two finger swipes up and down): 0 = seek by the seek step, 1 = volume, 2 = navigation (a swipe up opens the tiled view)\n"
+    "scroll_action = 2\n"
     "\n"
     "# Font file for the text (leave empty to use the system font)\n"
     "font =\n";
@@ -1466,7 +1468,7 @@ static void settings_load(void)
             cfg_remember_volume = (n != 0);
         else if (sscanf(line, " quit_when_done = %d", &n) == 1)
             cfg_quit_when_done = (n != 0);
-        else if (sscanf(line, " mouse_wheel = %d", &n) == 1)
+        else if (sscanf(line, " scroll_action = %d", &n) == 1)
             cfg_wheel = av_clip(n, 0, 2);
         else if (sscanf(line, " crossfade = %d", &n) == 1)
             cfg_crossfade = av_clip(n, 0, 10);
@@ -1514,7 +1516,7 @@ static void settings_save(void)
     fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
             cfg_remember_volume);
     fprintf(f, "# 1 = quit when the queue ends, 0 = show the idle screen\nquit_when_done = %d\n\n", cfg_quit_when_done);
-    fprintf(f, "# Mouse wheel (and touchpad swipe): 0 = off, 1 = volume, 2 = seek by the seek step\nmouse_wheel = %d\n\n", cfg_wheel);
+    fprintf(f, "# Scroll action (mouse wheel and two finger swipes up and down): 0 = seek by the seek step, 1 = volume, 2 = navigation (a swipe up opens the tiled view)\nscroll_action = %d\n\n", cfg_wheel);
     fprintf(f, "# Seconds the end of one item and the start of the next overlap (0 = off, 10 at most)\ncrossfade = %d\n\n",
             cfg_crossfade);
     fprintf(f, "# Folders the search of the tiled queue view looks in (empty = the system's Music and Videos folders)\nmusic_folder = %s\nvideo_folder = %s\n\n",
@@ -4594,7 +4596,7 @@ static double ui_prefs_w = 600.0;   /* the width of the panel: it grows when a r
 
 static const char *ui_pref_name[UI_PREF_ROWS] = {
     "Seek step", "Volume step", "Hide bars after", "Start fullscreen",
-    "Bar color", "Remember volume", "Quit when the queue ends", "Mouse wheel"
+    "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action"
 };
 static const struct { const char *name; int r, g, b; } ui_colors[] = {
     { "Blue", 84, 120, 168 }, { "Teal", 66, 148, 156 }, { "Green", 92, 150, 104 },
@@ -4650,7 +4652,7 @@ static void ui_pref_value(int row, char *out, size_t size)
         break;
     case 5: snprintf(out, size, "%s", cfg_remember_volume ? "On" : "Off"); break;
     case 6: snprintf(out, size, "%s", cfg_quit_when_done ? "On" : "Off"); break;
-    default: snprintf(out, size, "%s", cfg_wheel == 1 ? "Volume + queue" : cfg_wheel == 2 ? "Seek + queue" : "Off"); break;
+    default: snprintf(out, size, "%s", cfg_wheel == 1 ? "Volume" : cfg_wheel == 2 ? "Navigation" : "Seek"); break;
     }
 }
 
@@ -4697,9 +4699,9 @@ static int ui_pref_choices(int row, const char *names[10], char store[10][20], i
         *sel = ui_color_index();
         break;
     case 7:
-        snprintf(store[0], 20, "Off");
-        snprintf(store[1], 20, "Volume + queue");
-        snprintf(store[2], 20, "Seek + queue");
+        snprintf(store[0], 20, "Seek");
+        snprintf(store[1], 20, "Volume");
+        snprintf(store[2], 20, "Navigation");
         n = 3;
         *sel = av_clip(cfg_wheel, 0, 2);
         break;
@@ -8851,74 +8853,88 @@ static int ui_tv_text(VideoState *is, const char *t)
     return 1;
 }
 
-/* Swipes: sideways moves through the rows, up and down (two fingers) between rows or sections. A two finger swipe up on a touchpad
-   opens the view; a mouse wheel (whole notches) keeps its job, the volume. */
-static int ui_tv_wheel(VideoState *is, SDL_Event *ev)
+/* Swipes (v38). ui_wheel_action decides who gets a swipe (the Scroll action preference, and the bars); these are the parts that
+   belong to the tiled view. ay is already turned the right way round: a negative ay is fingers moving up. */
+static int64_t ui_tv_gest_until = 0;            /* the end of the swipe that opened the view keeps coming for a moment: it moves nothing */
+
+static int ui_tv_sec_at(int y)                  /* the section (while searching) that has the height y, or -1 */
 {
-    static double accx = 0.0, accy = 0.0, accs = 0.0;
-    static int64_t last = 0, lasty = 0, block = 0;
-    static int lock = 0, frac = 0;
+    int s;
+
+    for (s = 0; s < 3; s++)
+        if (y >= ui_tv_secy[s][0] && y < ui_tv_secy[s][1])
+            return s;
+    return -1;
+}
+
+/* Sideways: browsing, every row moves together. Searching, the section the mouse is resting on moves, on its own. */
+static void ui_tv_swipe_x(VideoState *is, double ax)
+{
+    static double acc = 0.0;
+    static int64_t last = 0;
     int64_t now = av_gettime_relative();
-    double ax, ay;
+    int steps;
 
-    if (!is || ui_menu_open || ui_prefs_open || !is->width)
-        return 0;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-    ax = ev->wheel.preciseX;
-    ay = ev->wheel.preciseY;
-#else
-    ax = ev->wheel.x;
-    ay = ev->wheel.y;
-#endif
-    if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-        ax = -ax;
-        ay = -ay;
-    }
-    if (ui_tv_cap(is)) {
-        if (FFABS(ax) > FFABS(ay)) {            /* sideways: the rows move */
-            int steps;
+    if (now - last > 300000 || ax * acc < 0.0)
+        acc = 0.0;
+    last = now;
+    acc += ax;
+    steps = (int)acc;
+    if (!steps)
+        return;
+    acc -= steps;
+    if (ui_tv_q[0]) {
+        int mx, my, s;
 
-            if (now - last > 300000 || ax * accx < 0.0)
-                accx = 0.0;
-            last = now;
-            accx += ax;
-            steps = (int)accx;
-            if (steps) {
-                accx -= steps;
-                ui_tv_step(is, steps, 0);
-            }
-        } else {                                /* up or down: one row, or section, for each swipe */
-            if (now - lasty > 250000) {
-                accy = 0.0;
-                lock = 0;
-            }
-            lasty = now;
-            accy += ay;
-            if (!lock && FFABS(accy) >= 2.0) {
-                lock = 1;
-                ui_tv_step(is, 0, accy * UI_TV_UP_SIGN > 0 ? 1 : -1);
-            }
-        }
-        return 1;
+        SDL_GetMouseState(&mx, &my);
+        s = ui_tv_sec_at(my);
+        if (s >= 0 && ui_tv_sec[s].n > 0)
+            ui_tv_act = s;
     }
-    if (FFABS(ay) <= FFABS(ax) || ay == 0.0)
-        return 0;
-    if (now - lasty > 250000) {
-        accs = 0.0;
-        frac = 0;
+    ui_tv_step(is, steps, 0);
+}
+
+/* Up and down: one row (or section) for each swipe */
+static void ui_tv_swipe_y(VideoState *is, double ay)
+{
+    static double acc = 0.0;
+    static int64_t last = 0;
+    static int lock = 0;
+    int64_t now = av_gettime_relative();
+
+    if (now < ui_tv_gest_until)
+        return;
+    if (now - last > 250000) {
+        acc = 0.0;
+        lock = 0;
     }
-    lasty = now;
-    if (FFABS(ay - floor(ay + 0.5)) > 0.01)
-        frac = 1;                               /* fractions: a touchpad, not a wheel */
-    if (!frac || ay * UI_TV_UP_SIGN <= 0.0)
-        return 0;
-    accs += FFABS(ay);
-    if (now >= block && accs >= UI_TV_SWIPE_MIN && !ui_tv_on(is)) {
+    last = now;
+    acc += ay;
+    if (!lock && FFABS(acc) >= 2.0) {
+        lock = 1;
+        ui_tv_step(is, 0, acc * UI_TV_UP_SIGN > 0 ? 1 : -1);
+    }
+}
+
+/* Fingers up (the Navigation choice) with the view closed: it opens. Returns 1 if the swipe was up. */
+static int ui_tv_swipe_open(VideoState *is, double ay)
+{
+    static double acc = 0.0;
+    static int64_t last = 0;
+    int64_t now = av_gettime_relative();
+
+    if (ay * UI_TV_UP_SIGN <= 0.0)
+        return 0;                               /* down: nothing to do while the view is closed */
+    if (now - last > 250000)
+        acc = 0.0;
+    last = now;
+    acc += FFABS(ay);
+    if (now >= ui_tv_gest_until && acc >= 1.0) {
+        acc = 0.0;
+        ui_tv_gest_until = now + 700000;
         ui_tv_enter(is);
-        block = now + 700000;                   /* the end of the swipe keeps coming for a moment */
-        accs = 0.0;
     }
-    return 1;                                   /* a swipe up does not change the volume */
+    return 1;
 }
 
 /* ---- drawing ---- */
@@ -9302,7 +9318,7 @@ static void ui_tv_draw(VideoState *is)
         double avail = cbot - ctop, rp = avail / R, sh, col = ui_tv_focus % L, rw = ui_tv_focus / L;
         int r;
 
-        sh = av_clipd(FFMIN(rp * 0.62, W * 0.2), 40.0, 260.0);
+        sh = av_clipd(FFMIN(FFMIN(rp * 0.74, rp - 46.0), W * 0.24), 40.0, 340.0);      /* v38: bigger */
         ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 9.0));
         ui_tv_row += (rw - ui_tv_row) * (1.0 - exp(-dt * 9.0));
         if (fabs(col - ui_tv_pos) < 0.003)
@@ -9324,7 +9340,7 @@ static void ui_tv_draw(VideoState *is)
             row.pos = FFMIN(ui_tv_pos, row.count - 1);
             row.cx = W / 2;
             row.cy = ctop + (int)(rp * (rr + 0.5)) - 8;
-            row.sw = (int)(sh * 1.5);
+            row.sw = (int)(sh * 1.75);
             row.sh = (int)sh;
             row.rowd = fabs(rr - ui_tv_row);
             row.born = ui_tv_born;
@@ -9335,7 +9351,7 @@ static void ui_tv_draw(VideoState *is)
             ui_label_c(W / 2, H - 46, "Type to search     Enter plays     Esc closes", 13, 255, 255, 255, (int)(95 * ep));
     } else {                                    /* searching: three sections, each its own row of matches, the best one in focus */
         double secH = (cbot - ctop) / 3.0;
-        int sh = (int)av_clipd(secH - 24 - 34, 36.0, 190.0), tr, tg, tb;
+        int sh = (int)av_clipd(FFMIN(secH - 24 - 30, W * 0.2), 36.0, 260.0), tr, tg, tb;     /* v38: bigger */
 
         ui_tv_theme(&tr, &tg, &tb);
         for (s = 0; s < 3; s++) {
@@ -9379,7 +9395,7 @@ static void ui_tv_draw(VideoState *is)
             row.pos = sec->pos;
             row.cx = (int)(W * 0.30);
             row.cy = top + 24 + sh / 2 + 6;
-            row.sw = (int)(sh * 1.5);
+            row.sw = (int)(sh * 1.75);
             row.sh = sh;
             row.rowd = s == ui_tv_act ? 0.0 : 0.45;
             row.born = sec->born;
@@ -13781,49 +13797,77 @@ static void ui_seek_relative(VideoState *is, double incr)
     }
 }
 
-/* The mouse wheel (or a touchpad swipe), as chosen in Preferences: volume, seek, or nothing */
+/* Where the mouse is on the bottom strip: 1 = on the seek bar, 2 = on the volume bar, 0 = elsewhere */
+static int ui_wheel_zone(VideoState *is)
+{
+    SDL_Rect sk, vo;
+    int mx, my;
+
+    if (!is || !UI_ON(is))
+        return 0;
+    SDL_GetMouseState(&mx, &my);
+    if (my < is->height - UI_BAR_H)
+        return 0;
+    ui_layout(is, &sk, &vo);
+    if (mx >= vo.x - 10 && mx <= vo.x + vo.w + 10)
+        return 2;
+    if (mx >= sk.x - 10 && mx <= sk.x + sk.w + 10)
+        return 1;
+    return 0;
+}
+
+/* The mouse wheel and the two finger swipes, as chosen in Preferences (Scroll action): seek, volume or navigation.
+   On the volume bar they change the volume and on the seek bar they seek, whatever is chosen. Sideways always navigates. */
 static void ui_wheel_action(VideoState *is, SDL_Event *ev)
 {
     static double acc = 0.0;
     static int64_t last = 0;
     int64_t now = av_gettime_relative();
-    double amount;
-    int steps, i;
+    double ax, ay;
+    int act, steps, i, zone;
 
-    if (ui_tv_wheel(is, ev))                    /* v37: swipes in the tiled view, and the two finger swipe up that opens it */
+    if (!is || ui_menu_open || ui_prefs_open)
         return;
-    if (!cfg_wheel || ui_menu_open || ui_prefs_open)
-        return;
-    {
-        double ax, ay;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-        ax = ev->wheel.preciseX;
-        ay = ev->wheel.preciseY;
+    ax = ev->wheel.preciseX;
+    ay = ev->wheel.preciseY;
 #else
-        ax = ev->wheel.x;
-        ay = ev->wheel.y;
+    ax = ev->wheel.x;
+    ay = ev->wheel.y;
 #endif
-        if (FFABS(ax) > FFABS(ay)) {            /* a sideways swipe moves through the queue */
-            ui_flow_swipe(is, ev);
-            return;
-        }
+    if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+        ax = -ax;
+        ay = -ay;
     }
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-    amount = ev->wheel.preciseY;
-#else
-    amount = ev->wheel.y;
-#endif
-    if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
-        amount = -amount;
-    if (now - last > 300000 || amount * acc < 0.0)
+    if (FFABS(ax) > FFABS(ay)) {                /* a sideways swipe: along the tiles of the view, or through the queue */
+        if (ui_tv_cap(is))
+            ui_tv_swipe_x(is, ax);
+        else
+            ui_flow_swipe(is, ev);
+        is->force_refresh = 1;
+        return;
+    }
+    if (ay == 0.0)
+        return;
+    zone = ui_wheel_zone(is);
+    act = zone == 1 ? 0 : zone == 2 ? 1 : cfg_wheel;            /* 0 = seek, 1 = volume, 2 = navigation */
+    if (act == 2 || (!zone && ui_tv_cap(is))) {                 /* with the view open, up and down belong to it */
+        if (ui_tv_cap(is))
+            ui_tv_swipe_y(is, ay);
+        else
+            ui_tv_swipe_open(is, ay);
+        is->force_refresh = 1;
+        return;
+    }
+    if (now - last > 300000 || ay * acc < 0.0)
         acc = 0.0;                              /* a new swipe, or the other direction: start from zero */
     last = now;
-    acc += amount;
+    acc += ay;
     steps = (int)acc;                           /* whole notches only: a touchpad adds up small moves */
     if (!steps)
         return;
     acc -= steps;
-    if (cfg_wheel == 1) {
+    if (act == 1) {
         for (i = 0; i < FFABS(steps); i++)
             update_volume(is, steps > 0 ? -1 : 1, SDL_VOLUME_STEP);        /* reversed */
     } else {
