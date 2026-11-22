@@ -762,7 +762,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1953,9090 @@
+@@ -1341,19 +1953,9203 @@
      return 0;
  }
  
@@ -1596,7 +1596,7 @@
 +static void queue_seed(void)
 +{
 +    static int seeded = 0;
- 
++
 +    if (!seeded) {
 +        srand((unsigned)av_gettime());
 +        seeded = 1;
@@ -2234,12 +2234,110 @@
 +    ui_drag = 0;
 +}
 +
++#include <SDL_syswm.h>
++#include <dlfcn.h>
++
 +/* ----- file dialogs (zenity), run in a thread so the player keeps working ----- */
++typedef struct {
++    int type;
++    unsigned long serial;
++    int send_event;
++    void *display;
++    unsigned long window;
++    unsigned long message_type;
++    int format;
++    long l[5];
++} UiXCM3;
++
 +static SDL_atomic_t ui_pick_busy;       /* 1 while a file dialog is open */
++static unsigned long ui_pick_xid = 0;   /* v42: our window (X11), the one the dialog belongs to */
++static long ui_pick_pid = 0;            /* v42: the process of the dialog */
++
++/* v42: zenity 4 ignores --attach, so on X11 the dialog's window is found by its process, made a child of ours (WM_TRANSIENT_FOR),
++   and asked to come to the front: the window manager keeps a dialog above the window it belongs to, even when that window is on
++   top or fills the screen. Nothing here can fail loudly: if the window is not found within 6 seconds, the dialog is left alone. */
++static int ui_pick_attach_thread(void *arg)
++{
++    void *xl = dlopen("libX11.so.6", RTLD_LAZY);
++    void *(*x_open)(const char *);
++    int (*x_close)(void *);
++    unsigned long (*x_atom)(void *, const char *, int);
++    unsigned long (*x_root)(void *);
++    int (*x_get)(void *, unsigned long, unsigned long, long, long, int, unsigned long, unsigned long *, int *, unsigned long *,
++                 unsigned long *, unsigned char **);
++    int (*x_free)(void *);
++    int (*x_trans)(void *, unsigned long, unsigned long);
++    int (*x_send)(void *, unsigned long, int, long, void *);
++    int (*x_flush)(void *);
++    void *dpy;
++    unsigned long root, a_list, a_pid, a_act;
++    int t;
++
++    (void)arg;
++    if (!xl || !ui_pick_xid || ui_pick_pid <= 0)
++        return 0;
++    *(void **)&x_open = dlsym(xl, "XOpenDisplay");
++    *(void **)&x_close = dlsym(xl, "XCloseDisplay");
++    *(void **)&x_atom = dlsym(xl, "XInternAtom");
++    *(void **)&x_root = dlsym(xl, "XDefaultRootWindow");
++    *(void **)&x_get = dlsym(xl, "XGetWindowProperty");
++    *(void **)&x_free = dlsym(xl, "XFree");
++    *(void **)&x_trans = dlsym(xl, "XSetTransientForHint");
++    *(void **)&x_send = dlsym(xl, "XSendEvent");
++    *(void **)&x_flush = dlsym(xl, "XFlush");
++    if (!x_open || !x_close || !x_atom || !x_root || !x_get || !x_free || !x_trans || !x_send || !x_flush)
++        return 0;
++    dpy = x_open(NULL);                         /* a connection of its own: nothing is shared with SDL's */
++    if (!dpy)
++        return 0;
++    root = x_root(dpy);
++    a_list = x_atom(dpy, "_NET_CLIENT_LIST", 0);
++    a_pid = x_atom(dpy, "_NET_WM_PID", 0);
++    a_act = x_atom(dpy, "_NET_ACTIVE_WINDOW", 0);
++    for (t = 0; t < 60; t++) {
++        unsigned long type, n = 0, after, i;
++        int fmt;
++        unsigned char *data = NULL;
++        int done = 0;
++
++        SDL_Delay(100);
++        if (x_get(dpy, root, a_list, 0, 4096, 0, 33 /* XA_WINDOW */, &type, &fmt, &n, &after, &data) != 0 || !data)
++            continue;
++        for (i = 0; i < n && !done; i++) {
++            unsigned long w = ((unsigned long *)data)[i], tn = 0, ta, tb;
++            int tf;
++            unsigned char *pd = NULL;
++
++            if (x_get(dpy, w, a_pid, 0, 1, 0, 6 /* XA_CARDINAL */, &ta, &tf, &tn, &tb, &pd) == 0 && pd) {
++                if (tn == 1 && *(unsigned long *)pd == (unsigned long)ui_pick_pid) {
++                    UiXCM3 ev;
++
++                    x_trans(dpy, w, ui_pick_xid);       /* the dialog belongs to our window */
++                    memset(&ev, 0, sizeof(ev));
++                    ev.type = 33;                       /* ClientMessage: _NET_ACTIVE_WINDOW */
++                    ev.display = dpy;
++                    ev.window = w;
++                    ev.message_type = a_act;
++                    ev.format = 32;
++                    ev.l[0] = 2;                        /* from a pager: the window manager brings it to the front */
++                    x_send(dpy, root, 0, (1L << 20) | (1L << 19), &ev);
++                    x_flush(dpy);
++                    done = 1;
++                }
++                x_free(pd);
++            }
++        }
++        x_free(data);
++        if (done)
++            break;
++    }
++    x_close(dpy);
++    return 0;
++}
 +
 +static int ui_pick_thread(void *arg)
 +{
-+    int item = (int)(intptr_t)arg;
++    int item = (int)(intptr_t)arg, first = 1;
 +    const char *cmd;
 +    char what;
 +    char line[PATH_MAX + 2];
@@ -2247,13 +2345,13 @@
 +    int status;
 +
 +    if (item == 0) {            /* Open File... */
-+        cmd = "zenity --file-selection --title='Open File' 2>/dev/null";
++        cmd = "echo $$; exec zenity --file-selection --title='Open File' 2>/dev/null";
 +        what = 'o';
 +    } else if (item == 1) {     /* Open Folder... */
-+        cmd = "zenity --file-selection --directory --title='Open Folder' 2>/dev/null";
++        cmd = "echo $$; exec zenity --file-selection --directory --title='Open Folder' 2>/dev/null";
 +        what = 'o';
 +    } else {                    /* Add to Queue... (one or more files) */
-+        cmd = "zenity --file-selection --multiple --separator='\n' --title='Add to Queue' 2>/dev/null";
++        cmd = "echo $$; exec zenity --file-selection --multiple --separator='\\n' --title='Add to Queue' 2>/dev/null";
 +        what = 'a';
 +    }
 +
@@ -2261,6 +2359,16 @@
 +    if (p) {
 +        while (fgets(line, sizeof(line), p)) {
 +            line[strcspn(line, "\n")] = 0;
++            if (first) {                        /* the first line is the process number of the dialog (v42) */
++                SDL_Thread *at;
++
++                first = 0;
++                ui_pick_pid = atol(line);
++                at = SDL_CreateThread(ui_pick_attach_thread, "dialog on top", NULL);
++                if (at)
++                    SDL_DetachThread(at);
++                continue;
++            }
 +            if (line[0])
 +                ui_inbox_send(what, line);
 +        }
@@ -2275,9 +2383,14 @@
 +static void ui_pick_start(int item)
 +{
 +    SDL_Thread *t;
++    SDL_SysWMinfo info;
 +
 +    if (!SDL_AtomicCAS(&ui_pick_busy, 0, 1))
 +        return;                 /* a dialog is already open */
++    ui_pick_xid = 0;
++    SDL_VERSION(&info.version);
++    if (window && SDL_GetWindowWMInfo(window, &info) && info.subsystem == SDL_SYSWM_X11)
++        ui_pick_xid = (unsigned long)info.info.x11.window;      /* X11 only: Wayland has no way to ask for this */
 +    t = SDL_CreateThread(ui_pick_thread, "file dialog", (void *)(intptr_t)item);
 +    if (t)
 +        SDL_DetachThread(t);
@@ -2873,7 +2986,7 @@
 +            SDL_RenderFillRect(renderer, &line);
 +    }
 +}
-+
+ 
 +/* A soft shadow under a panel: a few rounded shapes, each a little bigger and fainter */
 +static void ui_shadow(const SDL_Rect *t, int r)
 +{
@@ -9859,7 +9972,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +11139,14 @@
+@@ -1456,9 +11252,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -9874,7 +9987,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +11182,11 @@
+@@ -1494,9 +11295,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -9889,7 +10002,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +11447,30 @@
+@@ -1757,6 +11560,30 @@
      return 0;
  }
  
@@ -9920,7 +10033,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +11486,11 @@
+@@ -1772,6 +11599,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -9932,7 +10045,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +11760,11 @@
+@@ -2041,6 +11873,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -9944,7 +10057,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +12154,7 @@
+@@ -2430,7 +12267,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -9953,7 +10066,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +12175,24 @@
+@@ -2451,12 +12288,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -9980,7 +10093,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +12405,8 @@
+@@ -2669,7 +12518,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -9990,7 +10103,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +12471,13 @@
+@@ -2734,6 +12584,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -10004,7 +10117,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +12593,7 @@
+@@ -2849,6 +12706,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -10012,7 +10125,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +12691,10 @@
+@@ -2946,6 +12804,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -10023,7 +10136,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +12714,19 @@
+@@ -2965,6 +12827,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -10043,7 +10156,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +12762,13 @@
+@@ -3000,8 +12875,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -10059,7 +10172,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +12878,10 @@
+@@ -3111,8 +12991,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -10071,7 +10184,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +12893,7 @@
+@@ -3124,7 +13006,7 @@
      return is;
  }
  
@@ -10080,7 +10193,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +12972,83 @@
+@@ -3203,13 +13085,83 @@
  }
  
  
@@ -10165,7 +10278,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13060,568 @@
+@@ -3221,24 +13173,568 @@
      }
  }
  
@@ -10737,7 +10850,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +13649,1014 @@
+@@ -3266,6 +13762,1014 @@
  }
  
  /* handle an event sent by the GUI */
@@ -11752,7 +11865,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3275,85 +14666,98 @@
+@@ -3275,85 +14779,98 @@
          double x;
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
@@ -11901,7 +12014,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +14774,86 @@
+@@ -3370,40 +14887,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -12000,7 +12113,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +14890,23 @@
+@@ -3440,9 +15003,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -12024,7 +12137,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +14916,21 @@
+@@ -3452,9 +15029,21 @@
              }
              break;
          case SDL_QUIT:
@@ -12047,7 +12160,7 @@
          default:
              break;
          }
-@@ -3526,15 +15002,11 @@
+@@ -3526,15 +15115,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -12066,7 +12179,7 @@
  
      return 0;
  }
-@@ -3678,13 +15150,7 @@
+@@ -3678,13 +15263,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -12081,7 +12194,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +15166,21 @@
+@@ -3700,6 +15279,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -12103,7 +12216,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +15198,9 @@
+@@ -3717,10 +15311,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -12115,7 +12228,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +15208,7 @@
+@@ -3728,7 +15321,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -12124,7 +12237,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +15222,75 @@
+@@ -3742,15 +15335,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

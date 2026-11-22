@@ -6,6 +6,9 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v42
+- The file and folder dialogs (Open File, Open Folder, Add to Queue) stay above the player. They are the system's zenity dialogs; on X11 the player now makes the dialog a child of its window and asks the window manager to bring it to the front, so it can no longer open behind an always-on-top miniplayer or a full screen window. On Wayland nothing changes.
+
 ## v41
 - Fine seek steps where they are cheap: in a file whose key frames are close together (9 gaps in 10 of 3 seconds or less, and not heavy to decode) the Left and Right keys step 1 second and land exactly on their time; every other file keeps v40's step and ffplay's own seek. Sound-only files step 1 second. exact_seek = 0 in settings.conf turns the exact landing off.
 - A small miniplayer (under 700 x 420) opens no menus: the right-click menu, queue, Preferences, Media Info, the tiled view and the menus of tiles and queue items wait until it is made larger, and the ones that are open close when it gets small (UI_FIT_W / UI_FIT_H).
