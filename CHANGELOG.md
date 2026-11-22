@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v44
+- Our own file picker: Open File, Open Folder and Add to Queue open a picker in the player's glass style, drawn over the blurred player, so it cannot open behind the player and needs no zenity. Places on the left, a clickable path and an Up button on top, the folders and the music and videos in them with size and date. Type to filter; Up, Down, PageUp, PageDown, Home, End; Enter opens a folder or plays a file; Left or Backspace goes up; Esc clears the filter, then closes; Tab shows all files; Ctrl+H shows hidden ones; the wheel scrolls. Add to Queue: Space or a click ticks a file, Ctrl+A ticks all, Enter adds what is ticked, "Add this folder" adds the open one. It starts where it was last. picker = 0 in settings.conf brings the system dialog back.
+- The seek code nothing used any more is gone: the held-key steps and ui_scrub_draw (the warning in the build).
+
 ## v43
 - Rearranging in the tiled view: while a tile is held and dragged, the view scrolls when the mouse is near the left or right edge (along the rows) or the top or bottom (between the rows), faster the nearer the edge, so a tile can be dropped beyond the ones in sight.
 - The tiles that are not in focus are lighter: less fading with the distance from the focus and from the row in focus, and less dimming, so their pictures and titles can be read.
