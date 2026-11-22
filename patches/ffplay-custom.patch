@@ -43,7 +43,7 @@
      int muted;
      struct AudioParams audio_src;
      struct AudioParams audio_filter_src;
-@@ -286,6 +297,13 @@
+@@ -286,6 +297,14 @@
      double max_frame_duration;      // maximum duration of a frame - above this, we consider the jump a timestamp discontinuity
      struct SwsContext *sub_convert_ctx;
      int eof;
@@ -54,10 +54,11 @@
 +    volatile int ui_hold;       /* the reader saw the end of the last video: pause on its last picture */
 +    int ui_held;                /* 0 = not held, 1 = paused on the last picture, 2 = restarting */
 +    int ui_thumb_id;            /* the seek previews of this stream: 0 = not started, -1 = none, else their number */
++    double ui_seek_step;        /* v40: the step of the Left/Right keys for this file, in seconds (0 = not known: ffplay's 10) */
  
      char *filename;
      int width, height, xleft, ytop;
-@@ -320,7 +338,7 @@
+@@ -320,7 +339,7 @@
  static int seek_by_bytes = -1;
  static float seek_interval = 10;
  static int display_disable;
@@ -66,7 +67,7 @@
  static int alwaysontop;
  static int startup_volume = 100;
  static int show_status = -1;
-@@ -331,7 +349,7 @@
+@@ -331,7 +350,7 @@
  static int genpts = 0;
  static int lowres = 0;
  static int decoder_reorder_pts = -1;
@@ -75,16 +76,16 @@
  static int exit_on_keydown;
  static int exit_on_mousedown;
  static int loop = 1;
-@@ -352,7 +370,7 @@
+@@ -352,7 +371,7 @@
  static int filter_nbthreads = 0;
  
  /* current context */
 -static int is_full_screen;
-+static int is_full_screen = 1;
++static int is_full_screen = 0;
  static int64_t audio_callback_time;
  
  #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
-@@ -947,6 +965,45 @@
+@@ -947,6 +966,45 @@
  #endif
  }
  
@@ -130,7 +131,7 @@
  static void video_image_display(VideoState *is)
  {
      Frame *vp;
-@@ -1011,7 +1068,13 @@
+@@ -1011,7 +1069,13 @@
          vp->flip_v = vp->frame->linesize[0] < 0;
      }
  
@@ -145,7 +146,7 @@
      set_sdl_yuv_conversion_mode(NULL);
      if (sp) {
  #if USE_ONEPASS_SUBTITLE_RENDER
-@@ -1037,6 +1100,9 @@
+@@ -1037,6 +1101,9 @@
      return a < 0 ? a%b + b : a%b;
  }
  
@@ -155,7 +156,7 @@
  static void video_audio_display(VideoState *s)
  {
      int i, i_start, x, y1, y, ys, delay, n, nb_display_channels;
-@@ -1044,6 +1110,9 @@
+@@ -1044,6 +1111,9 @@
      int64_t time_diff;
      int rdft_bits, nb_freq;
  
@@ -165,7 +166,7 @@
      for (rdft_bits = 1; (1 << rdft_bits) < 2 * s->height; rdft_bits++)
          ;
      nb_freq = 1 << (rdft_bits - 1);
-@@ -1200,7 +1269,7 @@
+@@ -1200,7 +1270,7 @@
      switch (codecpar->codec_type) {
      case AVMEDIA_TYPE_AUDIO:
          decoder_abort(&is->auddec, &is->sampq);
@@ -174,7 +175,7 @@
          decoder_destroy(&is->auddec);
          swr_free(&is->swr_ctx);
          av_freep(&is->audio_buf1);
-@@ -1282,11 +1351,416 @@
+@@ -1282,11 +1352,418 @@
      av_free(is);
  }
  
@@ -184,7 +185,7 @@
 +static double  cfg_seek = 2.0;              /* seconds the Left/Right keys jump */
 +static int     cfg_vol_step = 2;            /* volume change per Up/Down press */
 +static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
-+static int     cfg_fullscreen = 1;          /* 1 = open fullscreen */
++static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
 +static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
 +static int     cfg_remember_volume = 1;     /* 1 = remember the volume between runs */
 +static int     cfg_quit_when_done = 0;      /* 1 = quit when the queue ends */
@@ -194,6 +195,7 @@
 +static char    cfg_video_dir[400] = "";     /* and for videos (empty = the system's Videos folder) */
 +#define cfg_keep_window 1               /* the window keeps the size you gave it from one item to the next (nothing is kept between runs) */
 +static int     ui_maxed = 0;                /* 1 = conventional full screen: the window fills the screen under the panel (maximized) */
++static int     ui_start_max = 1;            /* 1 = the window opens as the conventional full screen (never as the borderless one) */
 +static int     ui_user_sized = 0;           /* 1 = the window was resized or tiled by the user: the next items keep its size */
 +static int ui_keep_w = 0, ui_keep_h = 0;    /* the size the user gave the window: the next items open at it (full screen never changes it) */
 +static int ui_prog_w = 0, ui_prog_h = 0;    /* the size we asked for ourselves: an event with this size is ours, not the user's */
@@ -316,7 +318,8 @@
 +    }
 +    fclose(f);
 +
-+    is_full_screen = cfg_fullscreen;
++    is_full_screen = 0;                         /* v40: never the borderless full screen at the start: it is one double tap away */
++    ui_start_max = cfg_fullscreen;              /* On = the conventional full screen, Off = a normal window */
 +}
 +
 +/* Write all the settings back to the file (the Preferences panel uses this) */
@@ -337,7 +340,7 @@
 +    fprintf(f, "# Volume change for each Up/Down press (the scale is 0 to 128)\nvolume_step = %d\n\n", cfg_vol_step);
 +    fprintf(f, "# Seconds without mouse movement before the bars and cursor hide\nhide_seconds = %g\n\n",
 +            cfg_hide_delay / 1000000.0);
-+    fprintf(f, "# 1 = always open fullscreen, 0 = open in a window\nfullscreen = %d\n\n", cfg_fullscreen);
++    fprintf(f, "# 1 = open in the conventional full screen (the window that fills the screen under the panel; a double tap goes to complete full screen), 0 = open in a normal window\nfullscreen = %d\n\n", cfg_fullscreen);
 +    fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
 +            cfg_bar_r, cfg_bar_g, cfg_bar_b);
 +    fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -591,7 +594,7 @@
      if (renderer)
          SDL_DestroyRenderer(renderer);
      if (window)
-@@ -1298,7 +1772,7 @@
+@@ -1298,7 +1775,7 @@
          printf("\n");
      SDL_Quit();
      av_log(NULL, AV_LOG_QUIET, "%s", "");
@@ -600,7 +603,7 @@
  }
  
  static void sigterm_handler(int sig)
-@@ -1318,6 +1792,13 @@
+@@ -1318,6 +1795,72 @@
      default_height = rect.h;
  }
  
@@ -610,11 +613,70 @@
 +#define UI_ON(is) ((is)->width >= 260 && (is)->height >= UI_MIN_H)
 +
 +static int ui_shown_once = 0;   /* the window is shown once; later items leave its place and workspace alone */
++static void ui_max_set(int on);
++
++/* The step of the Left and Right keys for a file (v40). ffplay seeks to key frames, so a step that is shorter than the gap between
++   two key frames can leave the picture where it was: going back, it finds the same key frame again. The smallest step that always
++   moves is about one gap: the typical distance between key frames, and at least half of the longest one. It is kept between 2 and
++   10 seconds. Sound only: 2 seconds. A file whose key frames are not known (no index): ffplay's 10 seconds.
++   Called once, from the thread that opens the file, before it starts to read (the index does not change under it). */
++static int ui_step_cmp(const void *a, const void *b)
++{
++    double x = *(const double *)a, y = *(const double *)b;
++
++    return x < y ? -1 : x > y ? 1 : 0;
++}
++
++static double ui_seek_step_for(AVFormatContext *ic)
++{
++    AVStream *st;
++    int vi = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0), i, n, ng = 0;
++    double *gap, last = NAN, tb, step = 10.0, med, longest = 0.0;
++
++    if (vi < 0 || (ic->streams[vi]->disposition & AV_DISPOSITION_ATTACHED_PIC))
++        return 2.0;                             /* sound only: every frame is a place to land */
++    st = ic->streams[vi];
++    n = avformat_index_get_entries_count(st);
++    if (n < 4)
++        return 10.0;                            /* no index: the key frames are not known */
++    gap = av_malloc_array(FFMIN(n, 20000), sizeof(*gap));
++    if (!gap)
++        return 10.0;
++    tb = av_q2d(st->time_base);
++    for (i = 0; i < n && ng < 20000; i++) {
++        const AVIndexEntry *e = avformat_index_get_entry(st, i);
++        double t;
++
++        if (!e || !(e->flags & AVINDEX_KEYFRAME))
++            continue;
++        t = e->timestamp * tb;
++        if (!isnan(last) && t > last + 0.05) {
++            gap[ng++] = t - last;
++            longest = FFMAX(longest, t - last);
++        }
++        last = t;
++    }
++    if (ng >= 3) {
++        qsort(gap, ng, sizeof(*gap), ui_step_cmp);
++        med = gap[(ng * 9) / 10];               /* the 9th tenth, not the middle: in a file with some long gaps the middle step would leave the picture in place there */
++        step = ceil(FFMAX(med, 0.55 * longest));
++    }
++    av_free(gap);
++    return av_clipd(step, 2.0, 10.0);
++}
++
++/* How far the Left and Right keys (and the wheel on the seek bar) jump: the step of this file, or -seek_interval if it was given */
++static double ui_seek_len(VideoState *is)
++{
++    if (seek_interval != 10.0f)
++        return seek_interval > 0.0f ? seek_interval : 10.0;
++    return is && is->ui_seek_step > 0.0 ? is->ui_seek_step : 10.0;
++}
 +
  static int video_open(VideoState *is)
  {
      int w,h;
-@@ -1329,11 +1810,32 @@
+@@ -1329,11 +1872,42 @@
          window_title = input_filename;
      SDL_SetWindowTitle(window, window_title);
  
@@ -631,6 +693,14 @@
 +            SDL_GetWindowSize(window, &cw, &ch);
 +            tiled = ch >= ub.h - 8 || cw >= ub.w - 8;       /* maximized or tiled by the window manager: its size stays */
 +        }
++        if (!ui_shown_once && !screen_width && SDL_GetDisplayUsableBounds(0, &ub) == 0) {
++            double k = FFMIN((ub.w * 0.7) / FFMAX(w, 1), (ub.h * 0.7) / FFMAX(h, 1));      /* v40: not almost the whole screen */
++
++            if (k < 1.0) {
++                w = (int)(w * k) & ~1;
++                h = (int)(h * k) & ~1;
++            }
++        }
 +        if (tiled) {
 +            w = cw;
 +            h = ch;
@@ -642,6 +712,8 @@
 +        }
 +        if (!ui_shown_once)
 +            SDL_SetWindowPosition(window, screen_left, screen_top);
++        if (!ui_shown_once && ui_start_max)
++            ui_max_set(1);                      /* v40: it opens as the window that fills the screen */
 +        if (is_full_screen)
 +            SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 +        if (!ui_shown_once) {
@@ -652,7 +724,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1843,9078 @@
+@@ -1341,19 +1915,9078 @@
      return 0;
  }
  
@@ -2426,7 +2498,7 @@
 +        SDL_RenderDrawLine(renderer, tip, cy + k, tail, cy + h + k);
 +    }
 +}
- 
++
 +/* ----- line icons -----
 +   Thin single-line icons for the menus. Each one is a few strokes (lines and arcs) on a 24 x 24 grid, drawn once for each size
 +   into a small texture with smooth edges, and tinted when it is drawn. */
@@ -2829,9 +2901,8 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -3848,15 +3919,16 @@
 +static void ui_glass_frame(VideoState *is)
 +{
 +    int ww, wh;
-+
+ 
 +    SDL_GetWindowSize(window, &ww, &wh);
 +    ui_glass_resize(ww, wh);
 +
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -9737,7 +9809,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +11017,14 @@
+@@ -1456,9 +11089,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -9752,7 +9824,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +11060,11 @@
+@@ -1494,9 +11132,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -9767,7 +9839,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +11325,30 @@
+@@ -1757,6 +11397,30 @@
      return 0;
  }
  
@@ -9798,7 +9870,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +11364,11 @@
+@@ -1772,6 +11436,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -9810,7 +9882,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +11638,11 @@
+@@ -2041,6 +11710,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -9822,7 +9894,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +12032,7 @@
+@@ -2430,7 +12104,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -9831,7 +9903,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +12053,24 @@
+@@ -2451,12 +12125,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -9858,7 +9930,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +12283,8 @@
+@@ -2669,7 +12355,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -9868,7 +9940,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +12349,13 @@
+@@ -2734,6 +12421,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -9882,7 +9954,15 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2946,6 +12568,10 @@
+@@ -2849,6 +12543,7 @@
+     }
+ 
+     is->realtime = is_realtime(ic);
++    is->ui_seek_step = ui_seek_step_for(ic);    /* v40: the smallest step that moves smoothly for this file */
+ 
+     if (show_status)
+         av_dump_format(ic, 0, is->filename, 0);
+@@ -2946,6 +12641,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -9893,7 +9973,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +12591,19 @@
+@@ -2965,6 +12664,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -9913,7 +9993,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +12639,13 @@
+@@ -3000,8 +12712,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -9929,7 +10009,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +12755,10 @@
+@@ -3111,8 +12828,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -9941,7 +10021,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +12770,7 @@
+@@ -3124,7 +12843,7 @@
      return is;
  }
  
@@ -9950,7 +10030,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +12849,83 @@
+@@ -3203,13 +12922,83 @@
  }
  
  
@@ -10035,7 +10115,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +12937,568 @@
+@@ -3221,24 +13010,568 @@
      }
  }
  
@@ -10607,7 +10687,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +13526,1005 @@
+@@ -3266,6 +13599,1007 @@
  }
  
  /* handle an event sent by the GUI */
@@ -11417,6 +11497,8 @@
 +        SDL_SetWindowTitle(window, "ffplay-custom");
 +        if (!is_full_screen)
 +            SDL_SetWindowSize(window, 960, 540);
++        if (ui_start_max)
++            ui_max_set(1);                      /* v40: the idle screen opens as the window that fills the screen too */
 +        SDL_ShowWindow(window);
 +        ui_shown_once = 1;
 +        if (is_full_screen)
@@ -11604,7 +11686,7 @@
 +        for (i = 0; i < FFABS(steps); i++)
 +            update_volume(is, steps > 0 ? -1 : 1, SDL_VOLUME_STEP);        /* reversed */
 +    } else {
-+        ui_seek_relative(is, steps * (seek_interval ? seek_interval : 10.0));        /* v39: the same step as the arrow keys */
++        ui_seek_relative(is, steps * ui_seek_len(is));        /* the same step as the arrow keys */
 +    }
 +    ui_wake();                                  /* the bars show what happened */
 +    is->force_refresh = 1;
@@ -11613,7 +11695,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3275,74 +14534,86 @@
+@@ -3275,85 +14609,98 @@
          double x;
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
@@ -11743,10 +11825,12 @@
 -                break;
 +                break;                  /* Page Up and Page Down do nothing */
              case SDLK_LEFT:
-                 incr = seek_interval ? -seek_interval : -10.0;
+-                incr = seek_interval ? -seek_interval : -10.0;
++                incr = -ui_seek_len(cur_stream);
                  goto do_seek;
-@@ -3350,10 +14621,11 @@
-                 incr = seek_interval ? seek_interval : 10.0;
+             case SDLK_RIGHT:
+-                incr = seek_interval ? seek_interval : 10.0;
++                incr = ui_seek_len(cur_stream);
                  goto do_seek;
              case SDLK_UP:
 -                incr = 60.0;
@@ -11760,7 +11844,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,20 +14642,32 @@
+@@ -3370,20 +14717,32 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -11800,7 +11884,7 @@
              if (exit_on_mousedown) {
                  do_exit(cur_stream);
                  break;
-@@ -3391,7 +14675,7 @@
+@@ -3391,7 +14750,7 @@
              if (event.button.button == SDL_BUTTON_LEFT) {
                  static int64_t last_mouse_left_click = 0;
                  if (av_gettime_relative() - last_mouse_left_click <= 500000) {
@@ -11809,7 +11893,7 @@
                      cur_stream->force_refresh = 1;
                      last_mouse_left_click = 0;
                  } else {
-@@ -3399,11 +14683,17 @@
+@@ -3399,11 +14758,17 @@
                  }
              }
          case SDL_MOUSEMOTION:
@@ -11827,7 +11911,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +14730,23 @@
+@@ -3440,9 +14805,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -11851,7 +11935,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +14756,21 @@
+@@ -3452,9 +14831,21 @@
              }
              break;
          case SDL_QUIT:
@@ -11874,7 +11958,7 @@
          default:
              break;
          }
-@@ -3526,15 +14842,11 @@
+@@ -3526,15 +14917,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -11893,7 +11977,7 @@
  
      return 0;
  }
-@@ -3678,13 +14990,7 @@
+@@ -3678,13 +15065,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -11908,7 +11992,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +15006,21 @@
+@@ -3700,6 +15081,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -11930,7 +12014,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +15038,9 @@
+@@ -3717,10 +15113,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -11942,7 +12026,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +15048,7 @@
+@@ -3728,7 +15123,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -11951,7 +12035,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +15062,75 @@
+@@ -3742,15 +15137,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

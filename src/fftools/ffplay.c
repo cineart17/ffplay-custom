@@ -304,6 +304,7 @@ typedef struct VideoState {
     volatile int ui_hold;       /* the reader saw the end of the last video: pause on its last picture */
     int ui_held;                /* 0 = not held, 1 = paused on the last picture, 2 = restarting */
     int ui_thumb_id;            /* the seek previews of this stream: 0 = not started, -1 = none, else their number */
+    double ui_seek_step;        /* v40: the step of the Left/Right keys for this file, in seconds (0 = not known: ffplay's 10) */
 
     char *filename;
     int width, height, xleft, ytop;
@@ -370,7 +371,7 @@ static int find_stream_info = 1;
 static int filter_nbthreads = 0;
 
 /* current context */
-static int is_full_screen = 1;
+static int is_full_screen = 0;
 static int64_t audio_callback_time;
 
 #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
@@ -1357,7 +1358,7 @@ static void stream_close(VideoState *is)
 static double  cfg_seek = 2.0;              /* seconds the Left/Right keys jump */
 static int     cfg_vol_step = 2;            /* volume change per Up/Down press */
 static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
-static int     cfg_fullscreen = 1;          /* 1 = open fullscreen */
+static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
 static int     cfg_remember_volume = 1;     /* 1 = remember the volume between runs */
 static int     cfg_quit_when_done = 0;      /* 1 = quit when the queue ends */
@@ -1367,6 +1368,7 @@ static char    cfg_music_dir[400] = "";     /* v37: where the tiled view searche
 static char    cfg_video_dir[400] = "";     /* and for videos (empty = the system's Videos folder) */
 #define cfg_keep_window 1               /* the window keeps the size you gave it from one item to the next (nothing is kept between runs) */
 static int     ui_maxed = 0;                /* 1 = conventional full screen: the window fills the screen under the panel (maximized) */
+static int     ui_start_max = 1;            /* 1 = the window opens as the conventional full screen (never as the borderless one) */
 static int     ui_user_sized = 0;           /* 1 = the window was resized or tiled by the user: the next items keep its size */
 static int ui_keep_w = 0, ui_keep_h = 0;    /* the size the user gave the window: the next items open at it (full screen never changes it) */
 static int ui_prog_w = 0, ui_prog_h = 0;    /* the size we asked for ourselves: an event with this size is ours, not the user's */
@@ -1489,7 +1491,8 @@ static void settings_load(void)
     }
     fclose(f);
 
-    is_full_screen = cfg_fullscreen;
+    is_full_screen = 0;                         /* v40: never the borderless full screen at the start: it is one double tap away */
+    ui_start_max = cfg_fullscreen;              /* On = the conventional full screen, Off = a normal window */
 }
 
 /* Write all the settings back to the file (the Preferences panel uses this) */
@@ -1510,7 +1513,7 @@ static void settings_save(void)
     fprintf(f, "# Volume change for each Up/Down press (the scale is 0 to 128)\nvolume_step = %d\n\n", cfg_vol_step);
     fprintf(f, "# Seconds without mouse movement before the bars and cursor hide\nhide_seconds = %g\n\n",
             cfg_hide_delay / 1000000.0);
-    fprintf(f, "# 1 = always open fullscreen, 0 = open in a window\nfullscreen = %d\n\n", cfg_fullscreen);
+    fprintf(f, "# 1 = open in the conventional full screen (the window that fills the screen under the panel; a double tap goes to complete full screen), 0 = open in a normal window\nfullscreen = %d\n\n", cfg_fullscreen);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
             cfg_bar_r, cfg_bar_g, cfg_bar_b);
     fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -1798,6 +1801,65 @@ static void set_default_window_size(int width, int height, AVRational sar)
 #define UI_ON(is) ((is)->width >= 260 && (is)->height >= UI_MIN_H)
 
 static int ui_shown_once = 0;   /* the window is shown once; later items leave its place and workspace alone */
+static void ui_max_set(int on);
+
+/* The step of the Left and Right keys for a file (v40). ffplay seeks to key frames, so a step that is shorter than the gap between
+   two key frames can leave the picture where it was: going back, it finds the same key frame again. The smallest step that always
+   moves is about one gap: the typical distance between key frames, and at least half of the longest one. It is kept between 2 and
+   10 seconds. Sound only: 2 seconds. A file whose key frames are not known (no index): ffplay's 10 seconds.
+   Called once, from the thread that opens the file, before it starts to read (the index does not change under it). */
+static int ui_step_cmp(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static double ui_seek_step_for(AVFormatContext *ic)
+{
+    AVStream *st;
+    int vi = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0), i, n, ng = 0;
+    double *gap, last = NAN, tb, step = 10.0, med, longest = 0.0;
+
+    if (vi < 0 || (ic->streams[vi]->disposition & AV_DISPOSITION_ATTACHED_PIC))
+        return 2.0;                             /* sound only: every frame is a place to land */
+    st = ic->streams[vi];
+    n = avformat_index_get_entries_count(st);
+    if (n < 4)
+        return 10.0;                            /* no index: the key frames are not known */
+    gap = av_malloc_array(FFMIN(n, 20000), sizeof(*gap));
+    if (!gap)
+        return 10.0;
+    tb = av_q2d(st->time_base);
+    for (i = 0; i < n && ng < 20000; i++) {
+        const AVIndexEntry *e = avformat_index_get_entry(st, i);
+        double t;
+
+        if (!e || !(e->flags & AVINDEX_KEYFRAME))
+            continue;
+        t = e->timestamp * tb;
+        if (!isnan(last) && t > last + 0.05) {
+            gap[ng++] = t - last;
+            longest = FFMAX(longest, t - last);
+        }
+        last = t;
+    }
+    if (ng >= 3) {
+        qsort(gap, ng, sizeof(*gap), ui_step_cmp);
+        med = gap[(ng * 9) / 10];               /* the 9th tenth, not the middle: in a file with some long gaps the middle step would leave the picture in place there */
+        step = ceil(FFMAX(med, 0.55 * longest));
+    }
+    av_free(gap);
+    return av_clipd(step, 2.0, 10.0);
+}
+
+/* How far the Left and Right keys (and the wheel on the seek bar) jump: the step of this file, or -seek_interval if it was given */
+static double ui_seek_len(VideoState *is)
+{
+    if (seek_interval != 10.0f)
+        return seek_interval > 0.0f ? seek_interval : 10.0;
+    return is && is->ui_seek_step > 0.0 ? is->ui_seek_step : 10.0;
+}
 
 static int video_open(VideoState *is)
 {
@@ -1818,6 +1880,14 @@ static int video_open(VideoState *is)
             SDL_GetWindowSize(window, &cw, &ch);
             tiled = ch >= ub.h - 8 || cw >= ub.w - 8;       /* maximized or tiled by the window manager: its size stays */
         }
+        if (!ui_shown_once && !screen_width && SDL_GetDisplayUsableBounds(0, &ub) == 0) {
+            double k = FFMIN((ub.w * 0.7) / FFMAX(w, 1), (ub.h * 0.7) / FFMAX(h, 1));      /* v40: not almost the whole screen */
+
+            if (k < 1.0) {
+                w = (int)(w * k) & ~1;
+                h = (int)(h * k) & ~1;
+            }
+        }
         if (tiled) {
             w = cw;
             h = ch;
@@ -1829,6 +1899,8 @@ static int video_open(VideoState *is)
         }
         if (!ui_shown_once)
             SDL_SetWindowPosition(window, screen_left, screen_top);
+        if (!ui_shown_once && ui_start_max)
+            ui_max_set(1);                      /* v40: it opens as the window that fills the screen */
         if (is_full_screen)
             SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
         if (!ui_shown_once) {
@@ -12471,6 +12543,7 @@ static int read_thread(void *arg)
     }
 
     is->realtime = is_realtime(ic);
+    is->ui_seek_step = ui_seek_step_for(ic);    /* v40: the smallest step that moves smoothly for this file */
 
     if (show_status)
         av_dump_format(ic, 0, is->filename, 0);
@@ -14332,6 +14405,8 @@ static void ui_idle_loop(void)
         SDL_SetWindowTitle(window, "ffplay-custom");
         if (!is_full_screen)
             SDL_SetWindowSize(window, 960, 540);
+        if (ui_start_max)
+            ui_max_set(1);                      /* v40: the idle screen opens as the window that fills the screen too */
         SDL_ShowWindow(window);
         ui_shown_once = 1;
         if (is_full_screen)
@@ -14519,7 +14594,7 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
         for (i = 0; i < FFABS(steps); i++)
             update_volume(is, steps > 0 ? -1 : 1, SDL_VOLUME_STEP);        /* reversed */
     } else {
-        ui_seek_relative(is, steps * (seek_interval ? seek_interval : 10.0));        /* v39: the same step as the arrow keys */
+        ui_seek_relative(is, steps * ui_seek_len(is));        /* the same step as the arrow keys */
     }
     ui_wake();                                  /* the bars show what happened */
     is->force_refresh = 1;
@@ -14615,10 +14690,10 @@ static void event_loop(VideoState *cur_stream)
             case SDLK_PAGEDOWN:
                 break;                  /* Page Up and Page Down do nothing */
             case SDLK_LEFT:
-                incr = seek_interval ? -seek_interval : -10.0;
+                incr = -ui_seek_len(cur_stream);
                 goto do_seek;
             case SDLK_RIGHT:
-                incr = seek_interval ? seek_interval : 10.0;
+                incr = ui_seek_len(cur_stream);
                 goto do_seek;
             case SDLK_UP:
                 update_volume(cur_stream, 1, SDL_VOLUME_STEP);

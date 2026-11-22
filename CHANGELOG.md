@@ -6,6 +6,11 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v40
+- The player always starts in the conventional full screen (the window that fills the screen under the panel, with our title bar), never in the borderless full screen. The idle screen too. A double tap in the picture goes to complete full screen and back, as before.
+- Preferences, "Start fullscreen": On = that conventional full screen, Off = a normal window of at most 70% of the screen (also the size it goes back to when taken out of the conventional full screen).
+- The seek step of the Left and Right keys (and the wheel on the seek bar) is the smallest one that moves smoothly for each file: about the usual gap between key frames, between 2 and 10 seconds; sound-only files 2 seconds; files without a key frame index keep ffplay's 10 seconds. -seek_interval still overrides it.
+
 ## v39
 - Seeking is ffplay's own again: the Left and Right keys jump 10 s (or -seek_interval), the seek lands on the key frame, and there is no quiet gap, no preview picture and no held-key stepping. The wheel on the seek bar uses the same step. The "Seek step" preference and seek_seconds are gone (an old line is ignored). The live frames when the mouse is on the seek bar stay.
 - Tiled view: a video tile plays at its own frame rate while the mouse rests on it (only that tile is decoded), the tile under the mouse brightens like the one that plays, music tiles sit closer together, and the rows that are not in focus start at the far left.
