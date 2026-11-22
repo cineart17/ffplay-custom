@@ -6,6 +6,11 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v43
+- Rearranging in the tiled view: while a tile is held and dragged, the view scrolls when the mouse is near the left or right edge (along the rows) or the top or bottom (between the rows), faster the nearer the edge, so a tile can be dropped beyond the ones in sight.
+- The tiles that are not in focus are lighter: less fading with the distance from the focus and from the row in focus, and less dimming, so their pictures and titles can be read.
+- Leaving the tiled view over a video: the title (with its dot and glow) of the playing tile fades with the video growing back instead of staying on the picture, and the growing back ends sooner.
+
 ## v42
 - The file and folder dialogs (Open File, Open Folder, Add to Queue) stay above the player. They are the system's zenity dialogs; on X11 the player now makes the dialog a child of its window and asks the window manager to bring it to the front, so it can no longer open behind an always-on-top miniplayer or a full screen window. On Wayland nothing changes.
 

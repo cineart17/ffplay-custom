@@ -762,7 +762,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1953,9203 @@
+@@ -1341,19 +1953,9232 @@
      return 0;
  }
  
@@ -1602,7 +1602,7 @@
 +        seeded = 1;
 +    }
 +}
-+
+ 
 +/* A stream that is ending may still read the name of the item it plays, so the name of a removed
 +   playing item is kept until no stream is running (queue_reap, called once a stream has closed). */
 +static void queue_bury(char *name)
@@ -2986,7 +2986,7 @@
 +            SDL_RenderFillRect(renderer, &line);
 +    }
 +}
- 
++
 +/* A soft shadow under a panel: a few rounded shapes, each a little bigger and fainter */
 +static void ui_shadow(const SDL_Rect *t, int r)
 +{
@@ -8594,7 +8594,7 @@
 +    }
 +    qsort(ord, no, sizeof(ord[0]), ui_tv_ord_cmp);              /* the far ones first, the one in focus on top */
 +    for (o = 0; o < no; o++) {
-+        int c = ord[o].c, item = R->sec < 0 ? R->first + c : c, play, nw, nh, al, md, tx, ty, ti;
++        int c = ord[o].c, item = R->sec < 0 ? R->first + c : c, play, nw, nh, al, md, tx, ty, ti, la;
 +        double d = ord[o].d, dc = c - R->pos, sc, x, en, ease, x1, lf, goal, asp, bw, bh;
 +        const char *path = ui_tv_row_path(R, c);
 +        SDL_Texture *ptex;
@@ -8638,8 +8638,8 @@
 +        x1 = en - 1.0;
 +        ease = 1.0 + 2.70158 * x1 * x1 * x1 + 1.70158 * x1 * x1;                 /* eases out and overshoots a little */
 +        x += (1.0 - ease) * (dc < 0 ? -1.0 : 1.0) * W * 0.12;
-+        al = (int)(255 * av_clipd(1.05 - 0.26 * d, 0.18, 1.0) * av_clipd(1.0 - 0.5 * R->rowd, 0.55, 1.0));
-+        md = (int)(255 * av_clipd(1.0 - 0.22 * FFMIN(d, 2.2), 0.45, 1.0));
++        al = (int)(255 * av_clipd(1.05 - 0.17 * d, 0.5, 1.0) * av_clipd(1.0 - 0.25 * R->rowd, 0.78, 1.0));     /* v43: lighter than before, so they can be read */
++        md = (int)(255 * av_clipd(1.0 - 0.12 * FFMIN(d, 2.5), 0.72, 1.0));
 +        if (vm && R->sec < 0 && !play)
 +            al = (int)(al * ep);                /* the other tiles fade in while the video shrinks */
 +        al = (int)(al * en);
@@ -8666,7 +8666,8 @@
 +        if (ui_tv_drag && ui_tv_press == item && ui_tv_pressec == R->sec)
 +            al = al / 3;                        /* the one that is being dragged leaves a faint place behind */
 +        if (d < 0.6)                            /* a soft glow in the bar color behind the tile in focus, like the reference */
-+            ui_tv_glow(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0, tile.w * 0.95, tile.h * 0.95, (int)(120 * (1.0 - d / 0.6) * (al / 255.0)));
++            ui_tv_glow(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0, tile.w * 0.95, tile.h * 0.95,
++                       (int)(120 * (1.0 - d / 0.6) * (((vm && R->sec < 0 && play) ? al * ep * ep : al) / 255.0)));
 +        if (play && vm && ui_live_ok) {         /* the video that plays now keeps playing in its tile */
 +            SDL_Rect lr = tile;
 +
@@ -8687,6 +8688,7 @@
 +        px = d < 0.6 ? (R->sm ? 16 : 19) : (R->sm ? 12 : 14);
 +        tx = tile.x + tile.w / 2;
 +        ty = tile.y + tile.h + (d < 0.6 ? 20 : 16);
++        la = (vm && R->sec < 0 && play) ? (int)(al * ep * ep) : al;     /* v43: over a video the title goes with the video growing back */
 +        if (play) {                             /* the dot of the item that plays, before its title */
 +            SDL_Rect pdot;
 +            int tw = ui_text_width(name, px);
@@ -8696,10 +8698,10 @@
 +            pdot.x = tx - FFMIN(tw, (int)(pitch * 1.4)) / 2 - 14;
 +            pdot.y = ty - 3;
 +            SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
-+                                   av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * al / 255.0));
++                                   av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * la / 255.0));
 +            ui_pill(&pdot);
 +        }
-+        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(al * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
++        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(la * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
 +        if (ui_tvh_n < 128) {
 +            ui_tvh[ui_tvh_n].r.x = tile.x;
 +            ui_tvh[ui_tvh_n].r.y = tile.y;
@@ -8752,8 +8754,8 @@
 +        double want = ui_vflow ? 1.0 : 0.0, dtv = ui_vflow_t ? av_clipd((now - ui_vflow_t) / 1000000.0, 0.0, 0.1) : 0.0;
 +
 +        ui_vflow_t = now;
-+        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 12.0)));      /* growing back is quicker */
-+        if (fabs(want - ui_vflow_p) < 0.004)
++        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 14.0)));      /* growing back is quicker */
++        if (fabs(want - ui_vflow_p) < (want > 0.5 ? 0.004 : 0.03))      /* v43: the last part of the way back is not seen: it ends there */
 +            ui_vflow_p = want;
 +        ui_vflow_ep = ui_vflow_p * ui_vflow_p * (3.0 - 2.0 * ui_vflow_p);
 +        ep = ui_vflow_ep;
@@ -8908,6 +8910,33 @@
 +        const char *p = q_items[ui_tv_press];
 +        double asp = ui_cov_aspect(p);
 +
++        {                                       /* v43: near an edge the view scrolls, so the tile can be taken further than the ones in sight */
++            static int64_t last_scroll = 0;
++            double ex = FFMIN(W * 0.09, 170.0), ey = FFMIN(H * 0.13, 130.0), depth = 0.0;
++            int dx = 0, dy = 0;
++
++            if (ui_hov_x >= 0 && ui_hov_x < ex) {
++                dx = -1;
++                depth = 1.0 - ui_hov_x / ex;
++            } else if (ui_hov_x > W - ex) {
++                dx = 1;
++                depth = 1.0 - (W - ui_hov_x) / ex;
++            }
++            if (ui_hov_y >= 0 && ui_hov_y < ey) {
++                dy = -1;
++                depth = FFMAX(depth, 1.0 - ui_hov_y / ey);
++            } else if (ui_hov_y > H - ey) {
++                dy = 1;
++                depth = FFMAX(depth, 1.0 - (H - ui_hov_y) / ey);
++            }
++            if ((dx || dy) && !ui_tv_q[0]) {
++                if (now - last_scroll > (int64_t)((400.0 - 280.0 * av_clipd(depth, 0.0, 1.0)) * 1000.0)) {
++                    last_scroll = now;
++                    ui_tv_step(is, dx, dy);     /* one tile (or row) at a time, quicker the nearer the edge */
++                }
++                ui_tv_moving = 1;
++            }
++        }
 +        g.h = (int)FFMIN(H * 0.2, 140);
 +        g.w = asp > 0.0 ? (int)(g.h * asp) : g.h;
 +        g.x = ui_hov_x - g.w / 2;
@@ -9972,7 +10001,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +11252,14 @@
+@@ -1456,9 +11281,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -9987,7 +10016,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +11295,11 @@
+@@ -1494,9 +11324,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -10002,7 +10031,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +11560,30 @@
+@@ -1757,6 +11589,30 @@
      return 0;
  }
  
@@ -10033,7 +10062,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +11599,11 @@
+@@ -1772,6 +11628,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -10045,7 +10074,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +11873,11 @@
+@@ -2041,6 +11902,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -10057,7 +10086,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +12267,7 @@
+@@ -2430,7 +12296,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -10066,7 +10095,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +12288,24 @@
+@@ -2451,12 +12317,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -10093,7 +10122,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +12518,8 @@
+@@ -2669,7 +12547,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -10103,7 +10132,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +12584,13 @@
+@@ -2734,6 +12613,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -10117,7 +10146,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +12706,7 @@
+@@ -2849,6 +12735,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -10125,7 +10154,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +12804,10 @@
+@@ -2946,6 +12833,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -10136,7 +10165,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +12827,19 @@
+@@ -2965,6 +12856,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -10156,7 +10185,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +12875,13 @@
+@@ -3000,8 +12904,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -10172,7 +10201,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +12991,10 @@
+@@ -3111,8 +13020,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -10184,7 +10213,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +13006,7 @@
+@@ -3124,7 +13035,7 @@
      return is;
  }
  
@@ -10193,7 +10222,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +13085,83 @@
+@@ -3203,13 +13114,83 @@
  }
  
  
@@ -10278,7 +10307,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13173,568 @@
+@@ -3221,24 +13202,568 @@
      }
  }
  
@@ -10850,7 +10879,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +13762,1014 @@
+@@ -3266,6 +13791,1014 @@
  }
  
  /* handle an event sent by the GUI */
@@ -11865,7 +11894,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3275,85 +14779,98 @@
+@@ -3275,85 +14808,98 @@
          double x;
          refresh_loop_wait_event(cur_stream, &event);
          switch (event.type) {
@@ -12014,7 +12043,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +14887,86 @@
+@@ -3370,40 +14916,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -12113,7 +12142,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +15003,23 @@
+@@ -3440,9 +15032,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -12137,7 +12166,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +15029,21 @@
+@@ -3452,9 +15058,21 @@
              }
              break;
          case SDL_QUIT:
@@ -12160,7 +12189,7 @@
          default:
              break;
          }
-@@ -3526,15 +15115,11 @@
+@@ -3526,15 +15144,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -12179,7 +12208,7 @@
  
      return 0;
  }
-@@ -3678,13 +15263,7 @@
+@@ -3678,13 +15292,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -12194,7 +12223,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +15279,21 @@
+@@ -3700,6 +15308,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -12216,7 +12245,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +15311,9 @@
+@@ -3717,10 +15340,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -12228,7 +12257,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +15321,7 @@
+@@ -3728,7 +15350,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -12237,7 +12266,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +15335,75 @@
+@@ -3742,15 +15364,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

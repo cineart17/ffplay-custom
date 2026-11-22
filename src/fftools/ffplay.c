@@ -9775,7 +9775,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
     }
     qsort(ord, no, sizeof(ord[0]), ui_tv_ord_cmp);              /* the far ones first, the one in focus on top */
     for (o = 0; o < no; o++) {
-        int c = ord[o].c, item = R->sec < 0 ? R->first + c : c, play, nw, nh, al, md, tx, ty, ti;
+        int c = ord[o].c, item = R->sec < 0 ? R->first + c : c, play, nw, nh, al, md, tx, ty, ti, la;
         double d = ord[o].d, dc = c - R->pos, sc, x, en, ease, x1, lf, goal, asp, bw, bh;
         const char *path = ui_tv_row_path(R, c);
         SDL_Texture *ptex;
@@ -9819,8 +9819,8 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         x1 = en - 1.0;
         ease = 1.0 + 2.70158 * x1 * x1 * x1 + 1.70158 * x1 * x1;                 /* eases out and overshoots a little */
         x += (1.0 - ease) * (dc < 0 ? -1.0 : 1.0) * W * 0.12;
-        al = (int)(255 * av_clipd(1.05 - 0.26 * d, 0.18, 1.0) * av_clipd(1.0 - 0.5 * R->rowd, 0.55, 1.0));
-        md = (int)(255 * av_clipd(1.0 - 0.22 * FFMIN(d, 2.2), 0.45, 1.0));
+        al = (int)(255 * av_clipd(1.05 - 0.17 * d, 0.5, 1.0) * av_clipd(1.0 - 0.25 * R->rowd, 0.78, 1.0));     /* v43: lighter than before, so they can be read */
+        md = (int)(255 * av_clipd(1.0 - 0.12 * FFMIN(d, 2.5), 0.72, 1.0));
         if (vm && R->sec < 0 && !play)
             al = (int)(al * ep);                /* the other tiles fade in while the video shrinks */
         al = (int)(al * en);
@@ -9847,7 +9847,8 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         if (ui_tv_drag && ui_tv_press == item && ui_tv_pressec == R->sec)
             al = al / 3;                        /* the one that is being dragged leaves a faint place behind */
         if (d < 0.6)                            /* a soft glow in the bar color behind the tile in focus, like the reference */
-            ui_tv_glow(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0, tile.w * 0.95, tile.h * 0.95, (int)(120 * (1.0 - d / 0.6) * (al / 255.0)));
+            ui_tv_glow(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0, tile.w * 0.95, tile.h * 0.95,
+                       (int)(120 * (1.0 - d / 0.6) * (((vm && R->sec < 0 && play) ? al * ep * ep : al) / 255.0)));
         if (play && vm && ui_live_ok) {         /* the video that plays now keeps playing in its tile */
             SDL_Rect lr = tile;
 
@@ -9868,6 +9869,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         px = d < 0.6 ? (R->sm ? 16 : 19) : (R->sm ? 12 : 14);
         tx = tile.x + tile.w / 2;
         ty = tile.y + tile.h + (d < 0.6 ? 20 : 16);
+        la = (vm && R->sec < 0 && play) ? (int)(al * ep * ep) : al;     /* v43: over a video the title goes with the video growing back */
         if (play) {                             /* the dot of the item that plays, before its title */
             SDL_Rect pdot;
             int tw = ui_text_width(name, px);
@@ -9877,10 +9879,10 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
             pdot.x = tx - FFMIN(tw, (int)(pitch * 1.4)) / 2 - 14;
             pdot.y = ty - 3;
             SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
-                                   av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * al / 255.0));
+                                   av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * la / 255.0));
             ui_pill(&pdot);
         }
-        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(al * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
+        ui_tv_label(name, hl, px, tx, ty, (int)(pitch * (d < 0.6 ? 1.9 : 1.05)), (int)(la * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
         if (ui_tvh_n < 128) {
             ui_tvh[ui_tvh_n].r.x = tile.x;
             ui_tvh[ui_tvh_n].r.y = tile.y;
@@ -9933,8 +9935,8 @@ static void ui_tv_draw(VideoState *is)
         double want = ui_vflow ? 1.0 : 0.0, dtv = ui_vflow_t ? av_clipd((now - ui_vflow_t) / 1000000.0, 0.0, 0.1) : 0.0;
 
         ui_vflow_t = now;
-        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 12.0)));      /* growing back is quicker */
-        if (fabs(want - ui_vflow_p) < 0.004)
+        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 14.0)));      /* growing back is quicker */
+        if (fabs(want - ui_vflow_p) < (want > 0.5 ? 0.004 : 0.03))      /* v43: the last part of the way back is not seen: it ends there */
             ui_vflow_p = want;
         ui_vflow_ep = ui_vflow_p * ui_vflow_p * (3.0 - 2.0 * ui_vflow_p);
         ep = ui_vflow_ep;
@@ -10089,6 +10091,33 @@ static void ui_tv_draw(VideoState *is)
         const char *p = q_items[ui_tv_press];
         double asp = ui_cov_aspect(p);
 
+        {                                       /* v43: near an edge the view scrolls, so the tile can be taken further than the ones in sight */
+            static int64_t last_scroll = 0;
+            double ex = FFMIN(W * 0.09, 170.0), ey = FFMIN(H * 0.13, 130.0), depth = 0.0;
+            int dx = 0, dy = 0;
+
+            if (ui_hov_x >= 0 && ui_hov_x < ex) {
+                dx = -1;
+                depth = 1.0 - ui_hov_x / ex;
+            } else if (ui_hov_x > W - ex) {
+                dx = 1;
+                depth = 1.0 - (W - ui_hov_x) / ex;
+            }
+            if (ui_hov_y >= 0 && ui_hov_y < ey) {
+                dy = -1;
+                depth = FFMAX(depth, 1.0 - ui_hov_y / ey);
+            } else if (ui_hov_y > H - ey) {
+                dy = 1;
+                depth = FFMAX(depth, 1.0 - (H - ui_hov_y) / ey);
+            }
+            if ((dx || dy) && !ui_tv_q[0]) {
+                if (now - last_scroll > (int64_t)((400.0 - 280.0 * av_clipd(depth, 0.0, 1.0)) * 1000.0)) {
+                    last_scroll = now;
+                    ui_tv_step(is, dx, dy);     /* one tile (or row) at a time, quicker the nearer the edge */
+                }
+                ui_tv_moving = 1;
+            }
+        }
         g.h = (int)FFMIN(H * 0.2, 140);
         g.w = asp > 0.0 ? (int)(g.h * asp) : g.h;
         g.x = ui_hov_x - g.w / 2;
