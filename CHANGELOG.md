@@ -6,6 +6,12 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v45
+- The file picker sorts by Name, Date or Size (buttons on the path bar; a click on the active one turns the order round; folders stay first; ticked files stay ticked). Right click on a row opens a small menu instead of going up a folder: Play now / Add to queue for a file, Open folder / Play folder / Add folder to queue for a folder.
+- The x of a queue item shows only on the row the mouse is on, and it is a smooth one.
+- The arrows at the end of the menu rows and the separators in the picker's path are soft curves with no corners.
+- Crisper text: letters are placed with sub-pixel accuracy, which tightens the spacing in titles. crisp_text = 0 in settings.conf brings back the old rendering.
+
 ## v44
 - Our own file picker: Open File, Open Folder and Add to Queue open a picker in the player's glass style, drawn over the blurred player, so it cannot open behind the player and needs no zenity. Places on the left, a clickable path and an Up button on top, the folders and the music and videos in them with size and date. Type to filter; Up, Down, PageUp, PageDown, Home, End; Enter opens a folder or plays a file; Left or Backspace goes up; Esc clears the filter, then closes; Tab shows all files; Ctrl+H shows hidden ones; the wheel scrolls. Add to Queue: Space or a click ticks a file, Ctrl+A ticks all, Enter adds what is ticked, "Add this folder" adds the open one. It starts where it was last. picker = 0 in settings.conf brings the system dialog back.
 - The seek code nothing used any more is gone: the held-key steps and ui_scrub_draw (the warning in the build).

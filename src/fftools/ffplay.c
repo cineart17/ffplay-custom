@@ -1358,6 +1358,7 @@ static double  cfg_seek = 2.0;              /* seconds the Left/Right keys jump 
 static int     cfg_vol_step = 2;            /* volume change per Up/Down press */
 static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
 static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
+static int     cfg_crisp = 1;               /* 1 = letters placed with sub-pixel accuracy (v45) */
 static int     cfg_picker = 1;              /* 1 = our own file picker, 0 = the system's dialog (zenity) (v44) */
 static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
@@ -1468,6 +1469,8 @@ static void settings_load(void)
             cfg_exact_seek = (n != 0);
         else if (sscanf(line, " picker = %d", &n) == 1)
             cfg_picker = (n != 0);
+        else if (sscanf(line, " crisp_text = %d", &n) == 1)
+            cfg_crisp = (n != 0);
         else if (sscanf(line, " bar_color = %d %d %d", &r, &g, &b) == 3) {
             cfg_bar_r = av_clip(r, 0, 255);
             cfg_bar_g = av_clip(g, 0, 255);
@@ -1521,6 +1524,7 @@ static void settings_save(void)
     fprintf(f, "# 1 = open in the conventional full screen (the window that fills the screen under the panel; a double tap goes to complete full screen), 0 = open in a normal window\nfullscreen = %d\n\n", cfg_fullscreen);
     fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
     fprintf(f, "# 1 = Open File, Open Folder and Add to Queue use the player's own picker, 0 = the system's dialog (needs zenity)\npicker = %d\n\n", cfg_picker);
+    fprintf(f, "# 1 = letters are placed with sub-pixel accuracy (tighter, crisper titles), 0 = the older rendering\ncrisp_text = %d\n\n", cfg_crisp);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
             cfg_bar_r, cfg_bar_g, cfg_bar_b);
     fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -3661,7 +3665,12 @@ static TTF_Font *ui_font(int px)
         ui_ttf_state = -1;
         return NULL;
     }
-    TTF_SetFontHinting(ui_fonts[i].font, TTF_HINTING_LIGHT);
+#ifdef TTF_HINTING_LIGHT_SUBPIXEL
+    TTF_SetFontHinting(ui_fonts[i].font, cfg_crisp ? TTF_HINTING_LIGHT_SUBPIXEL : TTF_HINTING_LIGHT);
+#else
+    TTF_SetFontHinting(ui_fonts[i].font, cfg_crisp ? TTF_HINTING_NORMAL : TTF_HINTING_LIGHT);
+#endif
+    TTF_SetFontKerning(ui_fonts[i].font, 1);
     ui_fonts[i].px = px;
     return ui_fonts[i].font;
 }
@@ -3762,6 +3771,7 @@ static void ui_arrow(int cx, int cy, int dir, int a)
    into a small texture with smooth edges, and tinted when it is drawn. */
 enum { UI_IC_OPEN, UI_IC_FOLDER, UI_IC_FILE, UI_IC_QUEUE, UI_IC_INFO, UI_IC_GEAR, UI_IC_POWER, UI_IC_TRASH, UI_IC_MOON,
        UI_IC_FADE, UI_IC_SKIP, UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP, UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE,
+       UI_IC_CHEV_R, UI_IC_CHEV_D, UI_IC_CHEV_U, UI_IC_X,
        UI_IC_N };
 #define UI_IC_MAXS 80
 typedef struct { float a, b, c, d, e, f; int arc; } UiStroke;       /* a line (a,b to c,d) or an arc (centre a,b, radius c, angles e to f) */
@@ -3881,6 +3891,19 @@ static void ui_icon_build(int id)
         ic_seg(14, 10.5f, 14, 16);
         break;
     }
+    case UI_IC_CHEV_R:                          /* v45: a soft curve, no corner: an arc with round ends */
+        ic_arc(7.5f, 12, 7, -60, 60);
+        break;
+    case UI_IC_CHEV_D:
+        ic_arc(12, 7.5f, 7, 30, 150);
+        break;
+    case UI_IC_CHEV_U:
+        ic_arc(12, 16.5f, 7, 210, 330);
+        break;
+    case UI_IC_X:
+        ic_seg(7, 7, 17, 17);
+        ic_seg(17, 7, 7, 17);
+        break;
     case UI_IC_MOON:
         ic_arc(12, 12, 9, 5, 265);
         ic_arc(16.85f, 7.15f, 7, 53.7f, 216.3f);
@@ -5719,7 +5742,7 @@ static void ui_transport_icon(int which, int cx, int cy, int a)
 /* The arrow at the end of a menu row that opens a panel */
 static void ui_chevron(int x, int cy, int a)
 {
-    ui_arrow(x + 3, cy, 1, a - 60);
+    ui_icon(UI_IC_CHEV_R, x + 3, cy, 16, 225, 225, 225, av_clip((int)((a - 40) * ui_fade), 0, 255));
 }
 
 /* Choose what the sleep timer does: 0 = off, 1 = stop after the item that plays now, 2 to 5 = in 5, 10, 30
@@ -5881,10 +5904,9 @@ static void ui_q_draw(int ww, int wh)
             ui_label(right - 120, cy, "Zz", 15, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
                      av_clip(cfg_bar_b + 40, 0, 255), 230);
 
-        /* the x that removes the item */
-        SDL_SetRenderDrawColor(renderer, 230, 230, 230, (int)(((lit && hk == UI_Q_DEL) ? 255 : 120) * ui_fade));
-        ui_q_line(right - 71, cy - 4, right - 63, cy + 4);
-        ui_q_line(right - 71, cy + 4, right - 63, cy - 4);
+        /* the x that removes the item: only on the row the mouse is on (v45) */
+        if (lit)
+            ui_icon(UI_IC_X, right - 67, cy, 16, 230, 230, 230, (int)((hk == UI_Q_DEL ? 255 : 140) * ui_fade));
 
         /* the dot to drag by: the bar color for the playing item and the one being dragged */
         dot.w = 10;
@@ -13679,8 +13701,8 @@ typedef struct {
 } UiPkPlace;
 
 typedef struct {
-    SDL_Rect p, side, bar, list, up, cancel, ok, extra, all, hid;
-    int side_on, tog;                           /* tog: there is room in the foot for All files and Hidden */
+    SDL_Rect p, side, bar, list, up, cancel, ok, extra, all, hid, sort[3];
+    int side_on, tog, sort_on;                           /* tog: there is room in the foot for All files and Hidden */
 } UiPkLay;
 
 static UiPkEnt *ui_pk_e = NULL;
@@ -13700,11 +13722,14 @@ static int ui_pk_ncrumb = 0;
 static int64_t ui_pk_click_t = 0, ui_pk_nav_t = 0;      /* nav_t: when a folder was last read (a click just after it is the second of a double click) */
 static int ui_pk_click_row = -2;
 
+static int ui_pk_cm_open;                        /* v45 (the row menu, below) */
+
 static void ui_pk_close(VideoState *is)
 {
     int i;
 
     ui_pk_open = 0;
+    ui_pk_cm_open = 0;
     for (i = 0; i < ui_pk_n; i++)
         free(ui_pk_e[i].name);
     free(ui_pk_e);
@@ -13732,13 +13757,25 @@ static int ui_pk_has_ext(const char *name)
     return 0;
 }
 
+static int ui_pk_sortk = 0, ui_pk_desc = 0;     /* v45: sorted by 0 name, 1 date, 2 size; desc = the other way round */
+static char ui_pk_note[160];                    /* what was just added, shown at the top for a moment */
+static int64_t ui_pk_note_until = 0;
+
 static int ui_pk_cmp(const void *a, const void *b)
 {
     const UiPkEnt *x = a, *y = b;
+    int c = 0;
 
     if (x->dir != y->dir)
         return y->dir - x->dir;                 /* the folders first */
-    return av_strcasecmp(x->name, y->name);
+    if (ui_pk_sortk == 1 && x->mtime != y->mtime)
+        c = x->mtime < y->mtime ? -1 : 1;
+    else if (ui_pk_sortk == 2 && !x->dir && x->size != y->size)
+        c = x->size < y->size ? -1 : 1;
+    if (c)
+        return ui_pk_desc ? -c : c;
+    c = av_strcasecmp(x->name, y->name);
+    return ui_pk_sortk == 0 && ui_pk_desc ? -c : c;
 }
 
 /* The rows that pass the filter (what was typed, anywhere in the name) */
@@ -13752,6 +13789,42 @@ static void ui_pk_refilter(void)
             ui_pk_vis[ui_pk_nv++] = i;
     ui_pk_cur = av_clip(ui_pk_cur, 0, FFMAX(ui_pk_nv - 1, 0));
     ui_pk_sc = 0.0;
+}
+
+/* Sort the open folder again (the order was changed): what is ticked stays ticked, and the cursor stays on its row */
+static void ui_pk_resort(void)
+{
+    char *keep = NULL, **names = NULL;
+    int ns = 0, i, j;
+
+    if (ui_pk_nv > 0)
+        keep = strdup(ui_pk_e[ui_pk_vis[ui_pk_cur]].name);
+    for (i = 0; i < ui_pk_n; i++)
+        ns += ui_pk_sel[i] != 0;
+    if (ns && (names = malloc(sizeof(char *) * ns))) {
+        for (i = 0, j = 0; i < ui_pk_n; i++)
+            if (ui_pk_sel[i])
+                names[j++] = strdup(ui_pk_e[i].name);
+    }
+    qsort(ui_pk_e, ui_pk_n, sizeof(*ui_pk_e), ui_pk_cmp);
+    memset(ui_pk_sel, 0, ui_pk_n + 1);
+    for (j = 0; names && j < ns; j++) {
+        for (i = 0; i < ui_pk_n; i++)
+            if (names[j] && !strcmp(ui_pk_e[i].name, names[j])) {
+                ui_pk_sel[i] = 1;
+                break;
+            }
+        free(names[j]);
+    }
+    free(names);
+    ui_pk_refilter();
+    for (i = 0; keep && i < ui_pk_nv; i++)
+        if (!strcmp(ui_pk_e[ui_pk_vis[i]].name, keep)) {
+            ui_pk_cur = i;
+            ui_pk_sc = FFMAX(0.0, (i - 3) * (double)UI_PK_ROW);
+            break;
+        }
+    free(keep);
 }
 
 /* Read a folder. Returns 0 if it cannot be read (nothing changes then). */
@@ -13938,6 +14011,19 @@ static void ui_pk_layout(int ww, int wh, UiPkLay *L)
     L->hid = L->all;
     L->hid.x = L->all.x + L->all.w + 8;
     L->hid.w = 100;
+    {                                           /* v45: Name, Date, Size at the right end of the path bar */
+        static const char * const nm[3] = { "Name", "Date", "Size" };
+        int k, xr = L->bar.x + L->bar.w - 14;
+
+        L->sort_on = L->bar.w >= 500;
+        for (k = 2; k >= 0; k--) {
+            L->sort[k].w = ui_text_width(nm[k], 15) + (k == ui_pk_sortk ? 40 : 24);
+            L->sort[k].h = 30;
+            L->sort[k].y = L->bar.y + 7;
+            L->sort[k].x = xr - L->sort[k].w;
+            xr -= L->sort[k].w + 2;
+        }
+    }
 }
 
 static int ui_pk_ticked(void)
@@ -14079,6 +14165,98 @@ static void ui_pk_button(const SDL_Rect *r, const char *label, int hot, int prim
     ui_label_c(r->x + r->w / 2, r->y + r->h / 2, label, 16, 245, 245, 245, 255);
 }
 
+/* v45: the menu of a row (right click). A file: Play now, Add to queue. A folder: Open folder, Play folder, Add folder to queue. */
+enum { UI_PK_A_PLAY, UI_PK_A_ADD, UI_PK_A_ENTER };
+static int ui_pk_cm_open = 0, ui_pk_cm_x = 0, ui_pk_cm_y = 0, ui_pk_cm_e = -1, ui_pk_cm_n = 0, ui_pk_cm_hot = -1;
+static int ui_pk_cm_act[3];
+static char ui_pk_cm_lab[3][24];
+
+static SDL_Rect ui_pk_cm_rect(void)
+{
+    SDL_Rect r;
+    int ww, wh;
+
+    SDL_GetWindowSize(window, &ww, &wh);
+    r.w = 230;
+    r.h = ui_pk_cm_n * 36 + 12;
+    r.x = av_clip(ui_pk_cm_x, 4, FFMAX(ww - r.w - 4, 4));
+    r.y = av_clip(ui_pk_cm_y, 4, FFMAX(wh - r.h - 4, 4));
+    return r;
+}
+
+static void ui_pk_cm_start(int row, int x, int y)
+{
+    int e = ui_pk_vis[row];
+
+    ui_pk_cm_e = e;
+    ui_pk_cm_x = x;
+    ui_pk_cm_y = y;
+    ui_pk_cm_n = 0;
+    ui_pk_cm_hot = -1;
+    if (ui_pk_e[e].dir) {
+        snprintf(ui_pk_cm_lab[0], 24, "Open folder");
+        ui_pk_cm_act[0] = UI_PK_A_ENTER;
+        snprintf(ui_pk_cm_lab[1], 24, "Play folder");
+        ui_pk_cm_act[1] = UI_PK_A_PLAY;
+        snprintf(ui_pk_cm_lab[2], 24, "Add folder to queue");
+        ui_pk_cm_act[2] = UI_PK_A_ADD;
+        ui_pk_cm_n = 3;
+    } else {
+        snprintf(ui_pk_cm_lab[0], 24, "Play now");
+        ui_pk_cm_act[0] = UI_PK_A_PLAY;
+        snprintf(ui_pk_cm_lab[1], 24, "Add to queue");
+        ui_pk_cm_act[1] = UI_PK_A_ADD;
+        ui_pk_cm_n = 2;
+    }
+    ui_pk_cur = row;
+    ui_pk_touched = 1;
+    ui_pk_cm_open = 1;
+}
+
+static void ui_pk_cm_do(VideoState *is, int act)
+{
+    char path[PATH_MAX + 300];
+    int e = ui_pk_cm_e;
+
+    ui_pk_cm_open = 0;
+    if (e < 0 || e >= ui_pk_n)
+        return;
+    ui_pk_path_of(e, path, sizeof(path));
+    if (act == UI_PK_A_ENTER) {
+        ui_pk_go(path);
+    } else if (act == UI_PK_A_PLAY) {
+        ui_pk_send(is, 'o', path);
+        ui_pk_close(is);
+    } else {
+        ui_pk_send(is, 'a', path);              /* the picker stays open: more can be added */
+        snprintf(ui_pk_note, sizeof(ui_pk_note), "Added: %.120s", ui_pk_e[e].name);
+        ui_pk_note_until = av_gettime_relative() + 2500000;
+    }
+}
+
+static void ui_pk_cm_draw(void)
+{
+    SDL_Rect r;
+    int i;
+
+    if (!ui_pk_cm_open)
+        return;
+    r = ui_pk_cm_rect();
+    ui_glass(&r, 16);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 46);
+    SDL_RenderDrawRect(renderer, &r);           /* a fine edge, so the menu stands out from the panel under it */
+    for (i = 0; i < ui_pk_cm_n; i++) {
+        SDL_Rect row = { r.x + 6, r.y + 6 + i * 36, r.w - 12, 34 };
+
+        if (i == ui_pk_cm_hot) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 34);
+            ui_pill(&row);
+        }
+        ui_label(row.x + 14, row.y + row.h / 2, ui_pk_cm_lab[i], 16, 245, 245, 245, i == ui_pk_cm_hot ? 255 : 215);
+    }
+}
+
 static void ui_pk_draw(void)
 {
     UiPkLay L;
@@ -14109,7 +14287,7 @@ static void ui_pk_draw(void)
         ui_label(L.p.x + L.p.w - 26 - fw, L.p.y + UI_PK_HEAD / 2 + 2, tmp, 16, av_clip(cfg_bar_r + 60, 0, 255),
                  av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255), 255);
     } else {
-        const char *h = "Type to filter";
+        const char *h = av_gettime_relative() < ui_pk_note_until ? ui_pk_note : "Type to filter";
         int fw = ui_text_width(h, 15);
 
         ui_label(L.p.x + L.p.w - 26 - fw, L.p.y + UI_PK_HEAD / 2 + 2, h, 15, 170, 170, 170, 255);
@@ -14149,7 +14327,8 @@ static void ui_pk_draw(void)
         int hl = home ? (int)strlen(home) : 0, starts_home = hl > 1 && !strncmp(ui_pk_dir, home, hl) &&
                  (ui_pk_dir[hl] == '/' || !ui_pk_dir[hl]);
         struct { char label[PATH_MAX]; int upto; } seg[64];
-        int ns = 0, pos, sw, total, from = 0, avail = L.bar.w - L.up.w - 12 - 32, len = (int)strlen(ui_pk_dir);
+        int ns = 0, pos, sw, total, from = 0, avail = L.bar.w - L.up.w - 12 - 32 - (L.sort_on ? L.bar.x + L.bar.w - L.sort[0].x : 0),
+            len = (int)strlen(ui_pk_dir);
         const int gap = 28;
 
         if (starts_home) {
@@ -14204,9 +14383,26 @@ static void ui_pk_draw(void)
             ui_label(x, cy, tmp, 16, 245, 245, 245, last_seg ? 255 : 190);
             x += sw;
             if (!last_seg) {
-                ui_label(x + 10, cy, ">", 14, 150, 150, 150, 255);
+                ui_icon(UI_IC_CHEV_R, x + 13, cy, 14, 150, 150, 150, 255);
                 x += gap;
             }
+        }
+    }
+    if (L.sort_on) {
+        static const char * const nm[3] = { "Name", "Date", "Size" };
+
+        for (i = 0; i < 3; i++) {
+            int on = i == ui_pk_sortk, hot = ui_pk_hbtn == 10 + i;
+
+            if (hot) {
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
+                ui_pill(&L.sort[i]);
+            }
+            ui_label(L.sort[i].x + 12, L.sort[i].y + L.sort[i].h / 2, nm[i], 15, on ? av_clip(cfg_bar_r + 70, 0, 255) : 190,
+                     on ? av_clip(cfg_bar_g + 70, 0, 255) : 190, on ? av_clip(cfg_bar_b + 70, 0, 255) : 190, 255);
+            if (on)
+                ui_icon(ui_pk_desc ? UI_IC_CHEV_D : UI_IC_CHEV_U, L.sort[i].x + L.sort[i].w - 15, L.sort[i].y + L.sort[i].h / 2, 14,
+                        av_clip(cfg_bar_r + 70, 0, 255), av_clip(cfg_bar_g + 70, 0, 255), av_clip(cfg_bar_b + 70, 0, 255), 255);
         }
     }
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
@@ -14337,6 +14533,7 @@ static void ui_pk_draw(void)
     } else {
         ui_pk_button(&L.ok, okname, ui_pk_hbtn == 1, 1);
     }
+    ui_pk_cm_draw();
 }
 
 static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
@@ -14349,6 +14546,22 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
     x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
     y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
     ui_wake();
+    if (ui_pk_cm_open) {                        /* v45: the menu of a row owns the mouse until it closes */
+        SDL_Rect cr = ui_pk_cm_rect();
+
+        ui_pk_cm_hot = ui_pk_in(&cr, x, y) ? (y - cr.y - 6) / 36 : -1;
+        if (ui_pk_cm_hot >= ui_pk_cm_n || y < cr.y + 6)
+            ui_pk_cm_hot = -1;
+        if (ev->type == SDL_MOUSEBUTTONDOWN) {
+            if (ev->button.button == SDL_BUTTON_LEFT && ui_pk_cm_hot >= 0)
+                ui_pk_cm_do(is, ui_pk_cm_act[ui_pk_cm_hot]);
+            else
+                ui_pk_cm_open = 0;              /* a click anywhere else closes it */
+        }
+        if (is)
+            is->force_refresh = 1;
+        return 1;
+    }
     ui_pk_hrow = ui_pk_hplace = ui_pk_hbtn = -1;
     if (ui_pk_in(&L.list, x, y))
         ui_pk_hrow = (int)((y - L.list.y + ui_pk_sc) / UI_PK_ROW);
@@ -14356,7 +14569,14 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
         ui_pk_hrow = -1;
     if (L.side_on && ui_pk_in(&L.side, x, y) && y >= L.side.y + 8 && (y - L.side.y - 8) / 36 < ui_pk_npl)
         ui_pk_hplace = (y - L.side.y - 8) / 36;
-    if (ui_pk_in(&L.up, x, y))
+    if (L.sort_on && y >= L.bar.y && y < L.bar.y + L.bar.h) {
+        for (i = 0; i < 3; i++)
+            if (ui_pk_in(&L.sort[i], x, y))
+                ui_pk_hbtn = 10 + i;
+    }
+    if (ui_pk_hbtn >= 10)
+        ;
+    else if (ui_pk_in(&L.up, x, y))
         ui_pk_hbtn = 0;
     else if (ui_pk_in(&L.ok, x, y))
         ui_pk_hbtn = 1;
@@ -14372,8 +14592,8 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
 
     if (ev->type == SDL_MOUSEBUTTONDOWN) {
         if (ev->button.button != SDL_BUTTON_LEFT) {
-            if (ev->button.button == SDL_BUTTON_RIGHT && ui_pk_in(&L.p, x, y))
-                ui_pk_up();                     /* a right click inside goes up one folder */
+            if (ev->button.button == SDL_BUTTON_RIGHT && ui_pk_hrow >= 0)
+                ui_pk_cm_start(ui_pk_hrow, x, y);       /* v45: a right click on a row opens its menu (it used to go up a folder) */
         } else if (!ui_pk_in(&L.p, x, y)) {
             ui_pk_close(is);                    /* a click outside closes it */
         } else if (ui_pk_hbtn == 0) {
@@ -14393,6 +14613,16 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
                 ui_pk_hidden = !ui_pk_hidden;
             snprintf(keep, sizeof(keep), "%s", ui_pk_dir);
             ui_pk_load(keep);
+        } else if (ui_pk_hbtn >= 10) {
+            int k = ui_pk_hbtn - 10;
+
+            if (k == ui_pk_sortk) {
+                ui_pk_desc = !ui_pk_desc;       /* the one that is on: the other way round */
+            } else {
+                ui_pk_sortk = k;
+                ui_pk_desc = k != 0;            /* the newest and the biggest first, names from A */
+            }
+            ui_pk_resort();
         } else if (ui_pk_hplace >= 0) {
             ui_pk_go(ui_pk_pl[ui_pk_hplace].path);
         } else if (y >= L.bar.y && y < L.bar.y + L.bar.h) {
@@ -14470,6 +14700,11 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
         SDL_Keycode k = ev->key.keysym.sym;
         int ctrl = !!(ev->key.keysym.mod & KMOD_CTRL), alt = !!(ev->key.keysym.mod & KMOD_ALT);
 
+        if (ui_pk_cm_open) {
+            if (k == SDLK_ESCAPE)
+                ui_pk_cm_open = 0;
+            return 1;                           /* v45: the row menu uses the keys while it is open */
+        }
         if (k == SDLK_ESCAPE) {
             if (ui_pk_filter[0]) {
                 ui_pk_filter[0] = 0;
