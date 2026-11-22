@@ -305,6 +305,7 @@ typedef struct VideoState {
     int ui_held;                /* 0 = not held, 1 = paused on the last picture, 2 = restarting */
     int ui_thumb_id;            /* the seek previews of this stream: 0 = not started, -1 = none, else their number */
     double ui_seek_step;        /* v40: the step of the Left/Right keys for this file, in seconds (0 = not known: ffplay's 10) */
+    int ui_seek_exact;          /* v41: 1 = the key frames of this file are so close that a step can land exactly on its time */
 
     char *filename;
     int width, height, xleft, ytop;
@@ -1359,6 +1360,7 @@ static double  cfg_seek = 2.0;              /* seconds the Left/Right keys jump 
 static int     cfg_vol_step = 2;            /* volume change per Up/Down press */
 static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
 static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
+static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
 static int     cfg_remember_volume = 1;     /* 1 = remember the volume between runs */
 static int     cfg_quit_when_done = 0;      /* 1 = quit when the queue ends */
@@ -1463,6 +1465,8 @@ static void settings_load(void)
             cfg_hide_delay = (int64_t)(av_clipd(d, 0.5, 3600.0) * 1000000);
         else if (sscanf(line, " fullscreen = %d", &n) == 1)
             cfg_fullscreen = (n != 0);
+        else if (sscanf(line, " exact_seek = %d", &n) == 1)
+            cfg_exact_seek = (n != 0);
         else if (sscanf(line, " bar_color = %d %d %d", &r, &g, &b) == 3) {
             cfg_bar_r = av_clip(r, 0, 255);
             cfg_bar_g = av_clip(g, 0, 255);
@@ -1514,6 +1518,7 @@ static void settings_save(void)
     fprintf(f, "# Seconds without mouse movement before the bars and cursor hide\nhide_seconds = %g\n\n",
             cfg_hide_delay / 1000000.0);
     fprintf(f, "# 1 = open in the conventional full screen (the window that fills the screen under the panel; a double tap goes to complete full screen), 0 = open in a normal window\nfullscreen = %d\n\n", cfg_fullscreen);
+    fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
             cfg_bar_r, cfg_bar_g, cfg_bar_b);
     fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -1803,6 +1808,21 @@ static void set_default_window_size(int width, int height, AVRational sar)
 static int ui_shown_once = 0;   /* the window is shown once; later items leave its place and workspace alone */
 static void ui_max_set(int on);
 
+/* v41: the menus, the queue, the preferences, Media Info and the tiled view are made for a window of a usable size. The miniplayer
+   (small, but it can be dragged larger) opens none of them while it is smaller than this. */
+#define UI_FIT_W 700
+#define UI_FIT_H 420
+static int ui_pip;                              /* 1 = the miniplayer (set below) */
+static int ui_too_small(void)
+{
+    int w, h;
+
+    if (!ui_pip || !window)
+        return 0;
+    SDL_GetWindowSize(window, &w, &h);
+    return w < UI_FIT_W || h < UI_FIT_H;
+}
+
 /* The step of the Left and Right keys for a file (v40). ffplay seeks to key frames, so a step that is shorter than the gap between
    two key frames can leave the picture where it was: going back, it finds the same key frame again. The smallest step that always
    moves is about one gap: the typical distance between key frames, and at least half of the longest one. It is kept between 2 and
@@ -1815,14 +1835,19 @@ static int ui_step_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
-static double ui_seek_step_for(AVFormatContext *ic)
+#define UI_EXACT_GAP  3.0               /* exact landing only when 9 key frame gaps in 10 are this short (seconds) ...  */
+#define UI_EXACT_COST 150.0             /* ... and the longest gap, in 1080p frames to decode, is at most this much work */
+#define UI_EXACT_STEP 1.0               /* the step of a file that lands exactly (seconds) */
+
+static double ui_seek_step_for(AVFormatContext *ic, int *exact)
 {
     AVStream *st;
     int vi = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0), i, n, ng = 0;
     double *gap, last = NAN, tb, step = 10.0, med, longest = 0.0;
 
+    *exact = 0;
     if (vi < 0 || (ic->streams[vi]->disposition & AV_DISPOSITION_ATTACHED_PIC))
-        return 2.0;                             /* sound only: every frame is a place to land */
+        return 1.0;                             /* sound only: every frame is a place to land */
     st = ic->streams[vi];
     n = avformat_index_get_entries_count(st);
     if (n < 4)
@@ -1848,6 +1873,19 @@ static double ui_seek_step_for(AVFormatContext *ic)
         qsort(gap, ng, sizeof(*gap), ui_step_cmp);
         med = gap[(ng * 9) / 10];               /* the 9th tenth, not the middle: in a file with some long gaps the middle step would leave the picture in place there */
         step = ceil(FFMAX(med, 0.55 * longest));
+        if (cfg_exact_seek && med <= UI_EXACT_GAP) {
+            double fps = av_q2d(st->avg_frame_rate), px = (double)st->codecpar->width * st->codecpar->height;
+
+            if (!(fps > 1.0 && fps < 240.0))
+                fps = 30.0;
+            if (px < 1.0)
+                px = 1920.0 * 1080.0;
+            if (longest * fps * px / (1920.0 * 1080.0) <= UI_EXACT_COST) {
+                *exact = 1;                     /* close key frames: the step can be small, and it lands where it says */
+                av_free(gap);
+                return UI_EXACT_STEP;
+            }
+        }
     }
     av_free(gap);
     return av_clipd(step, 2.0, 10.0);
@@ -1920,7 +1958,7 @@ static int video_open(VideoState *is)
 
 static double get_master_clock(VideoState *is);
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
-#define UI_PRECISE_SEEK 0                /* 0 = seek to the nearest key frame, as ffplay does (v39) */
+#define UI_PRECISE_SEEK 1                /* the seeks that ask for it (a file with close key frames, v41) land exactly; the others go to the nearest key frame, as ffplay does */
 static int ui_precise_next = 0;         /* 1 = the next seek must land exactly on its time */
 
 static int ui_hover = 0;   /* 1 = mouse is over the bar strip */
@@ -2534,7 +2572,7 @@ static void ui_seek_flush(VideoState *is, int force)
 
         if (is->ic->start_time != AV_NOPTS_VALUE)
             ts += is->ic->start_time;
-        ui_precise_next = force;        /* the last seek of a drag lands exactly */
+        ui_precise_next = force && is->ui_seek_exact;   /* the last seek of a drag lands exactly, in a file where that is cheap */
         stream_seek(is, ts, 0, 0);
     }
 }
@@ -6492,7 +6530,7 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
         if (ev->button.x >= p.x && ev->button.x < p.x + p.w && ev->button.y >= p.y && ev->button.y < p.y + p.h)
             return 1;               /* a right-click on the rest of the panel does nothing */
     }
-    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_RIGHT && !ui_idle) {
+    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_RIGHT && !ui_idle && !ui_too_small()) {
         /* right-click on the video: open the menu at the mouse */
         ui_menu_open = 1;
         ui_menu_x = ev->button.x;
@@ -7382,6 +7420,8 @@ static void ui_vflow_set(VideoState *is, int on)
 {
     if (!!ui_vflow == !!on)
         return;
+    if (on && ui_too_small())
+        return;                                 /* v41: no room in a small miniplayer */
     ui_vflow = on;
     ui_vflow_t = 0;
     ui_bd_key[0] = 0;                   /* the backdrop takes its colors from the picture of this moment */
@@ -8870,7 +8910,7 @@ static void ui_tv_reset(VideoState *is, int64_t now)
 
 static void ui_tv_enter(VideoState *is)
 {
-    if (!is || q_count <= 0 || q_pos < 0 || ui_tv_cap(is))
+    if (!is || q_count <= 0 || q_pos < 0 || ui_tv_cap(is) || ui_too_small())
         return;
     if (is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
         if (!ui_vflow) {                        /* the same start as key L */
@@ -10932,6 +10972,16 @@ static void video_display(VideoState *is)
         ui_bg_probe = now;          /* one picture, drawn without waiting for the screen */
     }
 
+    if (ui_too_small() && (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open || ui_tvc_open ||
+                           ui_vflow || ui_tv_audio)) {
+        ui_menu_open = ui_prefs_open = ui_q_open = ui_info_open = ui_open_open = ui_ctx_open = ui_tvc_open = 0;       /* v41 */
+        ui_tv_audio = 0;
+        ui_vflow_auto = 0;
+        ui_vflow_set(is, 0);
+        ui_menu_hover = -1;
+        is->force_refresh = 1;
+    }
+
     if (ui_menu_open || ui_prefs_open) {
         ui_glass_frame(is);         /* frosted glass over the blurred picture */
         return;
@@ -12543,7 +12593,7 @@ static int read_thread(void *arg)
     }
 
     is->realtime = is_realtime(ic);
-    is->ui_seek_step = ui_seek_step_for(ic);    /* v40: the smallest step that moves smoothly for this file */
+    is->ui_seek_step = ui_seek_step_for(ic, &is->ui_seek_exact);    /* the smallest step that moves smoothly for this file (v40), and whether it lands exactly (v41) */
 
     if (show_status)
         av_dump_format(ic, 0, is->filename, 0);
@@ -13882,6 +13932,11 @@ static void ui_wm_state(const char *name, int add)
     x_flush(info.info.x11.display);
 }
 
+/* v41: the miniplayer follows the mouse while the picture is pressed and moved (the window manager's own move is only for the
+   title bar). pd_on: a press is waiting; pd_moved: it has become a drag. */
+static int ui_pd_on = 0, ui_pd_moved = 0, ui_pd_gx, ui_pd_gy, ui_pd_wx, ui_pd_wy;
+static int64_t ui_last_lclick = 0;              /* time of the last left click in the picture (a second one within half a second = double tap) */
+
 /* ----- picture in picture: the window as a small miniplayer on top, in a corner ----- */
 static int ui_pip = 0, ui_pip_was_top = 0, ui_pip_was_max = 0;     /* (was_top, was_max: how the window was before the miniplayer) */
 static int ui_pip_x, ui_pip_y, ui_pip_w, ui_pip_h, ui_pip_user, ui_pip_kw, ui_pip_kh;     /* the window as it was */
@@ -14513,6 +14568,8 @@ static void ui_seek_relative(VideoState *is, double incr)
         pos += incr;
         if (is->ic->start_time != AV_NOPTS_VALUE && pos < is->ic->start_time / (double)AV_TIME_BASE)
             pos = is->ic->start_time / (double)AV_TIME_BASE;
+        ui_precise_next = is->ui_seek_exact &&  /* v41: close key frames: land exactly (not in the last second: nothing there would reach the time) */
+                          (is->ic->duration <= 0 || pos < ((is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0) + is->ic->duration) / (double)AV_TIME_BASE - 1.0);
         stream_seek(is, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
         is->force_refresh = 1;
     }
@@ -14731,6 +14788,14 @@ static void event_loop(VideoState *cur_stream)
                 ui_wheel_action(cur_stream, &event);
             break;
         case SDL_MOUSEBUTTONUP:
+            if (ui_pd_on && event.button.button == SDL_BUTTON_LEFT) {
+                ui_pd_on = 0;
+                if (ui_pd_moved) {
+                    ui_pd_moved = 0;
+                    ui_pip_save();                      /* the new place is kept for the next time */
+                    break;
+                }
+            }
             if (ui_queue_release(&event)) {
                 cur_stream->force_refresh = 1;
                 break;
@@ -14748,16 +14813,36 @@ static void event_loop(VideoState *cur_stream)
                 break;
             }
             if (event.button.button == SDL_BUTTON_LEFT) {
-                static int64_t last_mouse_left_click = 0;
-                if (av_gettime_relative() - last_mouse_left_click <= 500000) {
+                if (av_gettime_relative() - ui_last_lclick <= 500000) {
                     ui_fs_cycle(cur_stream);
                     cur_stream->force_refresh = 1;
-                    last_mouse_left_click = 0;
+                    ui_last_lclick = 0;
                 } else {
-                    last_mouse_left_click = av_gettime_relative();
+                    ui_last_lclick = av_gettime_relative();
+                }
+                if (ui_pip && !ui_grow_on && !is_full_screen && window) {       /* v41: a press on the picture may become a drag */
+                    ui_pd_on = 1;
+                    ui_pd_moved = 0;
+                    SDL_GetGlobalMouseState(&ui_pd_gx, &ui_pd_gy);
+                    SDL_GetWindowPosition(window, &ui_pd_wx, &ui_pd_wy);
                 }
             }
         case SDL_MOUSEMOTION:
+            if (event.type == SDL_MOUSEMOTION && ui_pd_on) {
+                int gx, gy;
+
+                if (!(event.motion.state & SDL_BUTTON_LMASK) || !ui_pip || is_full_screen || ui_grow_on) {
+                    ui_pd_on = 0;
+                } else {
+                    SDL_GetGlobalMouseState(&gx, &gy);
+                    if (ui_pd_moved || abs(gx - ui_pd_gx) + abs(gy - ui_pd_gy) > 6) {
+                        ui_pd_moved = 1;
+                        ui_last_lclick = 0;             /* it was a drag, not the first tap of a double tap */
+                        SDL_SetWindowPosition(window, ui_pd_wx + gx - ui_pd_gx, ui_pd_wy + gy - ui_pd_gy);
+                        break;
+                    }
+                }
+            }
             if (event.type == SDL_MOUSEMOTION &&
                 (ui_titlebar_mouse(cur_stream, &event) || ui_menu_mouse(cur_stream, &event) ||
                  ui_window_mouse(cur_stream, &event) || ui_mouse(cur_stream, &event)))
