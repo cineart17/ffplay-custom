@@ -6,6 +6,15 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v47
+- The Preferences sliders have no knob: just the track and the fill, like the seek bar. The track is a little thicker under the mouse.
+- Tiles follow the Roundness setting all the way: their soft shadows are rounded like them (they were plain rectangles with square corners showing), and the file icon uses the same corner radius.
+- Crossfade and Sleep timer are only in the Queue menu (Sleep timer: Off, End of track, then the minutes).
+- Preferences has no cascade: every choice is showing. The title of the row under the mouse nudges in from the left margin, and the choice under the mouse grows from its own centre and settles.
+- A queue file that is gone (deleted after it was added) is skipped and the next item plays. The player only quits at the end of the queue if something really played, and a queue where every file is gone rests on the idle screen.
+- Dragging a queue item to the top or bottom edge scrolls the list smoothly, by time.
+- The placeholder in the tiled view's search box is brighter and a size larger.
+
 ## v46
 - Preferences has sliders, in the seek bar's style (a lighter shade of the bar color) with the value at the end: Volume step (1 to 16), Hide bars after (0.5 to 30 s, finer at the short end), Crossfade (Off to 10 s, whole seconds), Sleep timer (Off to 120 min, it follows the timer that runs). Drag one, or rest the mouse on its row and use the wheel, a two finger swipe up or down (up = more, like the volume swipe) or the Up, Down, Left and Right keys.
 - Glass tint: how strong the smoked veil under the glass is (panels, menus and the bar); 50% is as it was. Roundness: the corner radius of panels, menus, tiles, buttons and bars together; 100% is as it was, 0 makes everything square. Both are seen live in the Preferences panel while the slider moves, and are kept in settings.conf (glass_tint, roundness).
