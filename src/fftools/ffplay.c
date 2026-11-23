@@ -1359,6 +1359,12 @@ static int     cfg_vol_step = 2;            /* volume change per Up/Down press *
 static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
 static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
 static int     cfg_crisp = 1;               /* 1 = letters placed with sub-pixel accuracy (v45) */
+static int     cfg_tint = 50;               /* v46: how strong the smoked veil under the glass is, 0 to 100 (50 = as it was) */
+static int     cfg_round = 100;             /* v46: how round the corners are, 0 to 100 (100 = as they were, 0 = square) */
+static double  ui_round_k(void)
+{
+    return av_clipd(cfg_round, 0, 100) / 100.0;
+}
 static int     cfg_picker = 1;              /* 1 = our own file picker, 0 = the system's dialog (zenity) (v44) */
 static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
@@ -1471,6 +1477,10 @@ static void settings_load(void)
             cfg_picker = (n != 0);
         else if (sscanf(line, " crisp_text = %d", &n) == 1)
             cfg_crisp = (n != 0);
+        else if (sscanf(line, " glass_tint = %d", &n) == 1)
+            cfg_tint = av_clip(n, 0, 100);
+        else if (sscanf(line, " roundness = %d", &n) == 1)
+            cfg_round = av_clip(n, 0, 100);
         else if (sscanf(line, " bar_color = %d %d %d", &r, &g, &b) == 3) {
             cfg_bar_r = av_clip(r, 0, 255);
             cfg_bar_g = av_clip(g, 0, 255);
@@ -1525,6 +1535,7 @@ static void settings_save(void)
     fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
     fprintf(f, "# 1 = Open File, Open Folder and Add to Queue use the player's own picker, 0 = the system's dialog (needs zenity)\npicker = %d\n\n", cfg_picker);
     fprintf(f, "# 1 = letters are placed with sub-pixel accuracy (tighter, crisper titles), 0 = the older rendering\ncrisp_text = %d\n\n", cfg_crisp);
+    fprintf(f, "# How strong the smoked veil under the glass is (0 to 100), and how round the corners are (0 = square, 100 = as before)\nglass_tint = %d\nroundness = %d\n\n", cfg_tint, cfg_round);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
             cfg_bar_r, cfg_bar_g, cfg_bar_b);
     fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -2216,12 +2227,12 @@ static void ui_text(int x, int y, const char *s)
    Each row is a 1px tall rectangle, shortened at the ends to follow a circle. */
 static void ui_pill(const SDL_Rect *t)
 {
-    double rad = t->h / 2.0;
+    double rad = FFMIN(t->h, t->w) / 2.0 * ui_round_k();    /* v46: a full pill at 100%, a plain rectangle at 0 */
     int row;
 
     for (row = 0; row < t->h; row++) {
-        double dy = row + 0.5 - rad;                      /* row center to bar center */
-        int inset = (int)(rad - sqrt(rad * rad - dy * dy) + 0.5);
+        double e = FFMIN(row + 0.5, t->h - row - 0.5);    /* row center to the nearest top or bottom edge */
+        int inset = e < rad ? (int)(rad - sqrt(rad * rad - (rad - e) * (rad - e)) + 0.5) : 0;
         SDL_Rect line = { t->x + inset, t->y + row, t->w - 2 * inset, 1 };
 
         if (line.w > 0)
@@ -4579,7 +4590,7 @@ static void ui_liquid(const SDL_Rect *t, int r, int tr, int tg, int tb, int ta, 
     double lim = FFMIN(t->w, t->h) / 2.0 - 1.0, D;
     int k, j, c, i, ni = 0, nrim, nv = UI_LG_RINGS * UI_LG_NP;
 
-    r = FFMIN(r, FFMIN(t->w, t->h) / 2);
+    r = (int)(FFMIN(r, FFMIN(t->w, t->h) / 2) * ui_round_k() + 0.5);       /* v46 */
     if (shadow)
         ui_shadow(t, r);
     if (!bt || ui_gw <= 0 || ui_gh <= 0 || t->w < 12 || t->h < 12) {   /* no blurred picture yet: a plain tinted shape */
@@ -4688,7 +4699,7 @@ static void ui_glass(const SDL_Rect *t, int r)
     int ink = ui_ink_dark;
 
     ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
-    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 130, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
+    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 30 + 2 * cfg_tint, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
     ui_ink_dark = ink;
 }
 
@@ -4698,7 +4709,7 @@ static av_unused void ui_glass_dark(const SDL_Rect *t, int r)
     int ink = ui_ink_dark;
 
     ui_ink_dark = 0;
-    ui_liquid(t, r, 10, 12, 16, 105, 0);
+    ui_liquid(t, r, 10, 12, 16, 55 + cfg_tint, 0);
     ui_ink_dark = ink;
 }
 
@@ -4708,7 +4719,7 @@ static void ui_glass_bar(const SDL_Rect *t)
     int ink = ui_ink_dark;
 
     ui_ink_dark = 0;
-    ui_liquid(t, 0, 8, 10, 14, 125, 0);
+    ui_liquid(t, 0, 8, 10, 14, 75 + cfg_tint, 0);
     ui_ink_dark = ink;
 }
 
@@ -4749,7 +4760,7 @@ static void ui_blobs(void)
 }
 
 /* ----- the Preferences panel ----- */
-#define UI_PREF_ROWS 7
+#define UI_PREF_ROWS 11
 #define UI_PREF_ROW ui_pr_row   /* height of one row (smaller in a small window) */
 #define UI_PREF_HEAD ui_pr_head /* space for the title */
 #define UI_PREF_FOOT ui_pr_foot /* space for the hint at the bottom (none in a small window) */
@@ -4770,7 +4781,8 @@ static double ui_prefs_w = 600.0;   /* the width of the panel: it grows when a r
 
 static const char *ui_pref_name[UI_PREF_ROWS] = {
     "Volume step", "Hide bars after", "Start fullscreen",
-    "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action"
+    "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action",
+    "Crossfade", "Sleep timer", "Glass tint", "Roundness"
 };
 static const struct { const char *name; int r, g, b; } ui_colors[] = {
     { "Blue", 84, 120, 168 }, { "Teal", 66, 148, 156 }, { "Green", 92, 150, 104 },
@@ -4781,6 +4793,26 @@ static const struct { const char *name; int r, g, b; } ui_colors[] = {
 static const av_unused int ui_seek_steps[] = { 1, 2, 3, 5, 10, 15, 30 };
 static const int ui_vol_steps[] = { 1, 2, 4, 8, 16 };
 static const int ui_hide_steps[] = { 1, 2, 3, 4, 5, 8, 10, 15, 30 };
+
+/* v46: the rows are numbered as they were (and the four new ones 7 to 10); this is the order they are shown in, top to bottom */
+static const int ui_pref_map[UI_PREF_ROWS] = { 0, 1, 7, 8, 2, 3, 4, 5, 6, 9, 10 };
+
+static int ui_pref_pos(int row)
+{
+    int i;
+
+    for (i = 0; i < UI_PREF_ROWS; i++)
+        if (ui_pref_map[i] == row)
+            return i;
+    return 0;
+}
+
+/* The rows that are a slider and not a list of choices */
+static int ui_pref_slider(int row)
+{
+    return row == 0 || row == 1 || row == 7 || row == 8 || row == 9 || row == 10;
+}
+static void ui_sleep_set_minutes(int m);
 
 /* Rows with arrows (the others switch On/Off when clicked) */
 static av_unused int ui_pref_arrows(int row)
@@ -4839,6 +4871,8 @@ static int ui_pref_choices(int row, const char *names[10], char store[10][20], i
     int n = 0, i, b = 0;
 
     *sel = -1;
+    if (ui_pref_slider(row))
+        return 0;                               /* v46: a slider has no list */
     row++;
     switch (row) {
     case 0:
@@ -4948,7 +4982,7 @@ static int ui_pref_chip_at(int row, const SDL_Rect *p, int x, int y)
     SDL_Rect r[10];
     const char *names[10];
     char store[10][20];
-    int n, i, sel, px, cy = p->y + UI_PREF_HEAD + row * UI_PREF_ROW + UI_PREF_ROW / 2;
+    int n, i, sel, px, cy = p->y + UI_PREF_HEAD + ui_pref_pos(row) * UI_PREF_ROW + UI_PREF_ROW / 2;
 
     if (row < 0 || row >= UI_PREF_ROWS || ui_pref_open[row] < 0.4)
         return -1;
@@ -5016,6 +5050,155 @@ static av_unused void ui_pref_change(int row, int dir)
     settings_save();
 }
 
+/* ----- v46: the sliders. Each has a range, what it shows, and how it is put into the setting ----- */
+static int ui_pref_drag = -1;           /* the slider that is being dragged (-1 = none) */
+
+static double ui_sl_lo(int r)
+{
+    return r == 1 ? 0.5 : r == 0 ? 1.0 : 0.0;
+}
+
+static double ui_sl_hi(int r)
+{
+    return r == 0 ? 16.0 : r == 1 ? 30.0 : r == 7 ? 10.0 : r == 8 ? 120.0 : 100.0;
+}
+
+static double ui_sl_get(int r)
+{
+    switch (r) {
+    case 0: return cfg_vol_step;
+    case 1: return cfg_hide_delay / 1000000.0;
+    case 7: return cfg_crossfade;
+    case 8: return q_sleep_end ? ceil((q_sleep_end - av_gettime_relative()) / 60000000.0) : 0.0;     /* the minutes left of the timer that runs */
+    case 9: return cfg_tint;
+    default: return cfg_round;
+    }
+}
+
+static void ui_sl_put(int r, double v)
+{
+    v = av_clipd(v, ui_sl_lo(r), ui_sl_hi(r));
+    switch (r) {
+    case 0: cfg_vol_step = (int)(v + 0.5); break;
+    case 1:
+        v = v < 3.0 ? floor(v * 10.0 + 0.5) / 10.0 : v < 10.0 ? floor(v * 2.0 + 0.5) / 2.0 : floor(v + 0.5);
+        cfg_hide_delay = (int64_t)(v * 1000000.0);
+        break;
+    case 7: cfg_crossfade = (int)(v + 0.5); break;
+    case 8: ui_sleep_set_minutes((int)(v + 0.5)); break;
+    case 9: cfg_tint = (int)(v + 0.5); break;
+    default: cfg_round = (int)(v + 0.5); break;
+    }
+}
+
+static double ui_sl_t(int r)
+{
+    double v = av_clipd(ui_sl_get(r), ui_sl_lo(r), ui_sl_hi(r)), lo = ui_sl_lo(r), hi = ui_sl_hi(r);
+
+    return r == 1 ? log(v / lo) / log(hi / lo) : (v - lo) / (hi - lo);      /* the hiding time is finer at the short end */
+}
+
+static void ui_sl_text(int r, char *out, size_t size)
+{
+    switch (r) {
+    case 0: snprintf(out, size, "%d", cfg_vol_step); break;
+    case 1: snprintf(out, size, "%g s", cfg_hide_delay / 1000000.0); break;
+    case 7:
+        if (cfg_crossfade)
+            snprintf(out, size, "%d s", cfg_crossfade);
+        else
+            snprintf(out, size, "Off");
+        break;
+    case 8:
+        if (q_sleep_end)
+            snprintf(out, size, "%d min", (int)ui_sl_get(8));
+        else
+            snprintf(out, size, q_sleep_item ? "Track end" : "Off");
+        break;
+    case 9: snprintf(out, size, "%d%%", cfg_tint); break;
+    default:
+        if (cfg_round)
+            snprintf(out, size, "%d%%", cfg_round);
+        else
+            snprintf(out, size, "Square");
+        break;
+    }
+}
+
+/* One step of the arrow keys and of a notch of the wheel */
+static void ui_sl_nudge(int r, int dir)
+{
+    double v = ui_sl_get(r), st;
+
+    st = r == 1 ? (v < 3.0 - 0.01 || (dir < 0 && v <= 3.0 + 0.01) ? 0.1 : v < 10.0 - 0.01 || (dir < 0 && v <= 10.0 + 0.01) ? 0.5 : 1.0) :
+         r == 8 ? 5.0 : r >= 9 ? 5.0 : 1.0;
+    if (r == 8 && dir < 0 && v <= 5.0)
+        v = 5.0;                                /* down from 5 minutes: off */
+    ui_sl_put(r, v + dir * st);
+    settings_save();
+}
+
+/* Where the slider of a row is: the track from x0 to x1, the value after it. The same column for every row. */
+static void ui_sl_geom(const SDL_Rect *p, int *x0, int *x1, int *xr)
+{
+    int vw = ui_text_width("120 min", ui_pr_px) + 6;
+
+    *xr = p->x + p->w - ui_pr_mg;
+    *x0 = p->x + ui_pr_mg + UI_PREF_ICW + ui_text_width("Hide bars after", ui_pr_px) + 30;
+    *x1 = *xr - vw - 18;
+    if (*x1 - *x0 < 70)
+        *x0 = *x1 - 70;
+}
+
+static int ui_sl_hit(const SDL_Rect *p, int r, int x)
+{
+    int x0, x1, xr;
+
+    ui_sl_geom(p, &x0, &x1, &xr);
+    return x >= x0 - 12 && x <= x1 + 12;
+}
+
+static void ui_sl_drag_to(const SDL_Rect *p, int r, int x)
+{
+    int x0, x1, xr;
+    double t, lo = ui_sl_lo(r), hi = ui_sl_hi(r);
+
+    ui_sl_geom(p, &x0, &x1, &xr);
+    t = av_clipd((double)(x - x0) / FFMAX(x1 - x0, 1), 0.0, 1.0);
+    ui_sl_put(r, r == 1 ? lo * pow(hi / lo, t) : lo + (hi - lo) * t);
+}
+
+static void ui_sl_draw(const SDL_Rect *p, int r, int cy)
+{
+    SDL_Rect tr, fill, knob;
+    char text[32];
+    int x0, x1, xr, d, hot = r == ui_prefs_hover || r == ui_pref_drag;
+    double t = av_clipd(ui_sl_t(r), 0.0, 1.0);
+
+    ui_sl_geom(p, &x0, &x1, &xr);
+    tr.x = x0;
+    tr.y = cy - 3;
+    tr.w = x1 - x0;
+    tr.h = 6;
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 45);
+    ui_pill(&tr);                               /* the track, as on the seek bar */
+    fill = tr;
+    fill.w = FFMAX((int)(tr.w * t), tr.h);
+    SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 60, 0, 255), av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255),
+                           hot ? 235 : 200);
+    ui_pill(&fill);                             /* the part before the knob: a lighter shade of the bar color */
+    d = r == ui_pref_drag ? 20 : hot ? 17 : 14;
+    knob.w = knob.h = d;
+    knob.x = x0 + (int)((x1 - x0) * t) - d / 2;
+    knob.y = cy - d / 2;
+    SDL_SetRenderDrawColor(renderer, 245, 245, 245, 245);
+    ui_pill(&knob);
+    ui_sl_text(r, text, sizeof(text));
+    ui_label(xr - ui_text_width(text, ui_pr_px), cy, text, ui_pr_px, hot ? 255 : 225, hot ? 255 : 225, hot ? 255 : 225, 255);
+    if (r == 8 && q_sleep_end)
+        ui_prefs_anim = 1;                      /* the timer runs: the knob follows it */
+}
+
 static SDL_Rect ui_prefs_rect(int ww, int wh)
 {
     SDL_Rect p;
@@ -5069,7 +5252,7 @@ static void ui_prefs_draw(void)
     last = now;
     ui_prefs_anim = 0;
     for (i = 0; i < UI_PREF_ROWS; i++) {        /* the rows glide toward their choices, or back */
-        double tgt = i == ui_prefs_hover ? 1.0 : 0.0;
+        double tgt = (i == ui_prefs_hover && !ui_pref_slider(i)) ? 1.0 : 0.0;
 
         ui_pref_open[i] += (tgt - ui_pref_open[i]) * (1.0 - exp(-dt / 0.07));
         if (fabs(tgt - ui_pref_open[i]) < 0.005)
@@ -5079,7 +5262,7 @@ static void ui_prefs_draw(void)
     }
     SDL_GetWindowSize(window, &ww, &wh);
     wt = 600.0;                                 /* the panel grows if the name and the choices of the row under the mouse need more */
-    if (ui_prefs_hover >= 0 && ui_prefs_hover < UI_PREF_ROWS)
+    if (ui_prefs_hover >= 0 && ui_prefs_hover < UI_PREF_ROWS && !ui_pref_slider(ui_prefs_hover))
         wt = FFMAX(wt, ui_pref_need_w(ui_prefs_hover));
     wt = FFMIN(wt, ww - 16);
     ui_prefs_w += (wt - ui_prefs_w) * (1.0 - exp(-dt / 0.09));
@@ -5094,19 +5277,24 @@ static void ui_prefs_draw(void)
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     ui_label(p.x + ui_pr_mg, p.y + UI_PREF_HEAD / 2 + 4, "Preferences", ui_pr_tpx, 245, 245, 245, 255);
     for (i = 0; i < UI_PREF_ROWS; i++) {
-        cy = p.y + UI_PREF_HEAD + i * UI_PREF_ROW + UI_PREF_ROW / 2;
+        cy = p.y + UI_PREF_HEAD + ui_pref_pos(i) * UI_PREF_ROW + UI_PREF_ROW / 2;
         e = ui_pref_open[i];
         se = e * e * (3.0 - 2.0 * e);
         k = 1.0 - se;                           /* how much of the value is still showing */
         {
             static const int pic[UI_PREF_ROWS] = { UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP,
-                                                   UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE };
+                                                   UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE, UI_IC_FADE, UI_IC_MOON,
+                                                   UI_IC_DROP, UI_IC_EXPAND };
 
             ui_icon(pic[i], p.x + ui_pr_mg + (int)(10 * se), cy, av_clip(ui_pr_px, 14, 22), 245, 245, 245,
                     i == ui_prefs_hover ? 255 : 170);
         }
         ui_label(p.x + ui_pr_mg + UI_PREF_ICW + (int)(10 * se), cy, ui_pref_name[i], ui_pr_px, 245, 245, 245,
                  i == ui_prefs_hover ? 255 : 210);      /* the name nudges a little to make room, like a volume bar coming in from the side */
+        if (ui_pref_slider(i)) {                /* v46 */
+            ui_sl_draw(&p, i, cy);
+            continue;
+        }
 
         if (k > 0.01) {
             ui_pref_value(i, value, sizeof(value));
@@ -5160,7 +5348,7 @@ static void ui_prefs_draw(void)
         }
     }
     if (UI_PREF_FOOT >= 30)
-        ui_label(p.x + ui_pr_mg, p.y + p.h - UI_PREF_FOOT / 2, "Move the mouse onto a setting to see its choices.  Esc closes.",
+        ui_label(p.x + ui_pr_mg, p.y + p.h - UI_PREF_FOOT / 2, "Hover for the choices. Sliders: drag, scroll or arrows. Esc closes.",
              15, 170, 170, 170, 255);
 }
 
@@ -5177,6 +5365,8 @@ static int ui_prefs_mouse(VideoState *is, SDL_Event *ev)
     row = (y >= p.y + UI_PREF_HEAD) ? (y - p.y - UI_PREF_HEAD) / UI_PREF_ROW : -1;
     if (row >= UI_PREF_ROWS || x < p.x || x >= p.x + p.w)
         row = -1;
+    if (row >= 0)
+        row = ui_pref_map[row];                 /* v46: the row number as it is kept */
     ui_wake();
     ui_prefs_mx = x;
     ui_prefs_my = y;
@@ -5187,6 +5377,12 @@ static int ui_prefs_mouse(VideoState *is, SDL_Event *ev)
         if (ev->button.button != SDL_BUTTON_LEFT || x < p.x || x >= p.x + p.w ||
             y < p.y || y >= p.y + p.h) {
             ui_prefs_open = 0;                  /* right-click or a click outside closes it */
+        } else if (row >= 0 && ui_pref_slider(row)) {
+            if (ui_sl_hit(&p, row, x)) {        /* v46: the slider takes the mouse until the button is let go */
+                ui_pref_drag = row;
+                SDL_CaptureMouse(SDL_TRUE);
+                ui_sl_drag_to(&p, row, x);
+            }
         } else if (row >= 0) {
             int c = ui_pref_chip_at(row, &p, x, y);
 
@@ -5197,6 +5393,75 @@ static int ui_prefs_mouse(VideoState *is, SDL_Event *ev)
     if (is)
         is->force_refresh = 1;
     return 1;
+}
+
+/* v46: while the panel is open, the wheel, a two finger swipe and the arrow keys move the slider the mouse is on, and a drag that
+   goes outside the panel goes on. Returns 1 if the event was used. */
+static int ui_prefs_event(VideoState *is, SDL_Event *ev)
+{
+    static double acc = 0.0;
+    int r = ui_prefs_hover;
+    SDL_Rect p;
+    int ww, wh;
+
+    if (!ui_prefs_open) {
+        ui_pref_drag = -1;
+        return 0;
+    }
+    SDL_GetWindowSize(window, &ww, &wh);
+    p = ui_prefs_rect(ww, wh);
+    if (ev->type == SDL_MOUSEMOTION && ui_pref_drag >= 0) {
+        ui_sl_drag_to(&p, ui_pref_drag, ev->motion.x);
+        ui_wake();
+        if (is)
+            is->force_refresh = 1;
+        return 1;
+    }
+    if (ev->type == SDL_MOUSEBUTTONUP && ui_pref_drag >= 0) {
+        ui_pref_drag = -1;
+        SDL_CaptureMouse(SDL_FALSE);
+        settings_save();
+        if (is)
+            is->force_refresh = 1;
+        return 1;
+    }
+    if (ev->type == SDL_MOUSEWHEEL) {
+        double ay = ev->wheel.preciseY;
+        int steps;
+
+        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+            ay = -ay;
+        if (r >= 0 && ui_pref_slider(r)) {
+            if (ay * acc < 0.0)
+                acc = 0.0;
+            acc += ay;
+            steps = (int)acc;
+            if (steps) {
+                acc -= steps;
+                ui_sl_nudge(r, steps > 0 ? -1 : 1);     /* the same way round as the volume swipe: up = more */
+            }
+        }
+        ui_wake();
+        if (is)
+            is->force_refresh = 1;
+        return 1;                               /* the panel is up: nothing else uses the wheel */
+    }
+    if (ev->type == SDL_KEYDOWN && r >= 0 && ui_pref_slider(r)) {
+        SDL_Keycode k = ev->key.keysym.sym;
+        int dir = (k == SDLK_UP || k == SDLK_RIGHT || k == SDLK_PAGEUP) ? 1 : (k == SDLK_DOWN || k == SDLK_LEFT || k == SDLK_PAGEDOWN) ? -1 : 0;
+
+        if (dir) {
+            int n = (k == SDLK_PAGEUP || k == SDLK_PAGEDOWN) ? 4 : 1;
+
+            while (n--)
+                ui_sl_nudge(r, dir);
+            ui_wake();
+            if (is)
+                is->force_refresh = 1;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Draw one whole frame with frosted glass: used while a menu or the Preferences panel is up,
@@ -5770,6 +6035,25 @@ static int ui_sleep_current(void)
     if (q_sleep_end)
         return av_clip(ui_sleep_sel, 2, 5);
     return q_sleep_item ? 1 : 0;
+}
+
+/* v46: the sleep timer for any number of minutes (0 = off); the sound fades out over its last 20 seconds, as for the others */
+static void ui_sleep_set_minutes(int m)
+{
+    static const int minutes[6] = { 0, 0, 5, 10, 30, 60 };
+    int i, best = 2;
+
+    if (m <= 0) {
+        ui_sleep_choose(0);
+        return;
+    }
+    q_sleep_item = NULL;
+    q_sleep_end = av_gettime_relative() + (int64_t)m * 60 * 1000000;
+    ui_sleep_gain = 1.0f;
+    for (i = 3; i <= 5; i++)                    /* the queue panel marks the nearest of its own choices */
+        if (abs(minutes[i] - m) < abs(minutes[best] - m))
+            best = i;
+    ui_sleep_sel = best;
 }
 
 /* What the sleep row says while it is closed */
@@ -7810,7 +8094,7 @@ static void ui_flow_quad_round(SDL_Texture *tex, const SDL_Rect *t, int al, int 
     double cyt = t->y + t->h / 2.0, kin = 1.0 - 0.16 * fabs(tilt);
     SDL_Color c;
 
-    rr = av_clip(rr, 0, FFMIN(t->w, t->h) / 2);
+    rr = (int)(av_clip(rr, 0, FFMIN(t->w, t->h) / 2) * ui_round_k() + 0.5);     /* v46 */
     c.r = (Uint8)md;
     c.g = (Uint8)md;
     c.b = (Uint8)md;
@@ -15691,6 +15975,8 @@ static void ui_idle_loop(void)
         while (SDL_PollEvent(&ev)) {
             if (ev.type != SDL_QUIT && ui_pk_event(NULL, &ev))      /* v44 */
                 continue;
+            if (ev.type != SDL_QUIT && ui_prefs_open && ui_prefs_event(NULL, &ev))      /* v46 */
+                continue;
             switch (ev.type) {
             case SDL_QUIT:
                 do_exit(NULL);
@@ -15868,6 +16154,8 @@ static void event_loop(VideoState *cur_stream)
         double x;
         refresh_loop_wait_event(cur_stream, &event);
         if (ui_pk_event(cur_stream, &event))    /* v44: the picker uses the keys, the typing and the wheel while it is open */
+            continue;
+        if (ui_prefs_open && ui_prefs_event(cur_stream, &event))        /* v46: the sliders */
             continue;
         switch (event.type) {
         case SDL_TEXTINPUT:                     /* v37: typing in the tiled view searches */

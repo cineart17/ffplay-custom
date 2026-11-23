@@ -174,7 +174,7 @@
          decoder_destroy(&is->auddec);
          swr_free(&is->swr_ctx);
          av_freep(&is->audio_buf1);
-@@ -1282,11 +1351,430 @@
+@@ -1282,11 +1351,441 @@
      av_free(is);
  }
  
@@ -186,6 +186,12 @@
 +static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
 +static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
 +static int     cfg_crisp = 1;               /* 1 = letters placed with sub-pixel accuracy (v45) */
++static int     cfg_tint = 50;               /* v46: how strong the smoked veil under the glass is, 0 to 100 (50 = as it was) */
++static int     cfg_round = 100;             /* v46: how round the corners are, 0 to 100 (100 = as they were, 0 = square) */
++static double  ui_round_k(void)
++{
++    return av_clipd(cfg_round, 0, 100) / 100.0;
++}
 +static int     cfg_picker = 1;              /* 1 = our own file picker, 0 = the system's dialog (zenity) (v44) */
 +static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 +static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
@@ -298,6 +304,10 @@
 +            cfg_picker = (n != 0);
 +        else if (sscanf(line, " crisp_text = %d", &n) == 1)
 +            cfg_crisp = (n != 0);
++        else if (sscanf(line, " glass_tint = %d", &n) == 1)
++            cfg_tint = av_clip(n, 0, 100);
++        else if (sscanf(line, " roundness = %d", &n) == 1)
++            cfg_round = av_clip(n, 0, 100);
 +        else if (sscanf(line, " bar_color = %d %d %d", &r, &g, &b) == 3) {
 +            cfg_bar_r = av_clip(r, 0, 255);
 +            cfg_bar_g = av_clip(g, 0, 255);
@@ -352,6 +362,7 @@
 +    fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
 +    fprintf(f, "# 1 = Open File, Open Folder and Add to Queue use the player's own picker, 0 = the system's dialog (needs zenity)\npicker = %d\n\n", cfg_picker);
 +    fprintf(f, "# 1 = letters are placed with sub-pixel accuracy (tighter, crisper titles), 0 = the older rendering\ncrisp_text = %d\n\n", cfg_crisp);
++    fprintf(f, "# How strong the smoked veil under the glass is (0 to 100), and how round the corners are (0 = square, 100 = as before)\nglass_tint = %d\nroundness = %d\n\n", cfg_tint, cfg_round);
 +    fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
 +            cfg_bar_r, cfg_bar_g, cfg_bar_b);
 +    fprintf(f, "# 1 = remember the volume between runs, 0 = always start at full volume\nremember_volume = %d\n\n",
@@ -605,7 +616,7 @@
      if (renderer)
          SDL_DestroyRenderer(renderer);
      if (window)
-@@ -1298,7 +1786,7 @@
+@@ -1298,7 +1797,7 @@
          printf("\n");
      SDL_Quit();
      av_log(NULL, AV_LOG_QUIET, "%s", "");
@@ -614,7 +625,7 @@
  }
  
  static void sigterm_handler(int sig)
-@@ -1318,6 +1806,105 @@
+@@ -1318,6 +1817,105 @@
      default_height = rect.h;
  }
  
@@ -720,7 +731,7 @@
  static int video_open(VideoState *is)
  {
      int w,h;
-@@ -1329,11 +1916,42 @@
+@@ -1329,11 +1927,42 @@
          window_title = input_filename;
      SDL_SetWindowTitle(window, window_title);
  
@@ -768,7 +779,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1959,9180 @@
+@@ -1341,19 +1970,9453 @@
      return 0;
  }
  
@@ -1033,12 +1044,12 @@
 +   Each row is a 1px tall rectangle, shortened at the ends to follow a circle. */
 +static void ui_pill(const SDL_Rect *t)
 +{
-+    double rad = t->h / 2.0;
++    double rad = FFMIN(t->h, t->w) / 2.0 * ui_round_k();    /* v46: a full pill at 100%, a plain rectangle at 0 */
 +    int row;
 +
 +    for (row = 0; row < t->h; row++) {
-+        double dy = row + 0.5 - rad;                      /* row center to bar center */
-+        int inset = (int)(rad - sqrt(rad * rad - dy * dy) + 0.5);
++        double e = FFMIN(row + 0.5, t->h - row - 0.5);    /* row center to the nearest top or bottom edge */
++        int inset = e < rad ? (int)(rad - sqrt(rad * rad - (rad - e) * (rad - e)) + 0.5) : 0;
 +        SDL_Rect line = { t->x + inset, t->y + row, t->w - 2 * inset, 1 };
 +
 +        if (line.w > 0)
@@ -1188,7 +1199,7 @@
 +        is->ui_thumb_id = -1;
 +    }
 +}
-+
+ 
 +/* The preview for the fraction f of the video, above the time label (its top is at ybox), centered on cx. It takes the nearest
 +   one that is ready, so it never waits; a few more are ready every moment */
 +static void ui_th_draw(VideoState *is, double f, int cx, int ybox)
@@ -2999,8 +3010,9 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -3396,7 +3408,7 @@
 +    double lim = FFMIN(t->w, t->h) / 2.0 - 1.0, D;
 +    int k, j, c, i, ni = 0, nrim, nv = UI_LG_RINGS * UI_LG_NP;
 +
-+    r = FFMIN(r, FFMIN(t->w, t->h) / 2);
++    r = (int)(FFMIN(r, FFMIN(t->w, t->h) / 2) * ui_round_k() + 0.5);       /* v46 */
 +    if (shadow)
 +        ui_shadow(t, r);
 +    if (!bt || ui_gw <= 0 || ui_gh <= 0 || t->w < 12 || t->h < 12) {   /* no blurred picture yet: a plain tinted shape */
@@ -3505,7 +3517,7 @@
 +    int ink = ui_ink_dark;
 +
 +    ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
-+    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 130, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
++    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 30 + 2 * cfg_tint, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
 +    ui_ink_dark = ink;
 +}
 +
@@ -3515,7 +3527,7 @@
 +    int ink = ui_ink_dark;
 +
 +    ui_ink_dark = 0;
-+    ui_liquid(t, r, 10, 12, 16, 105, 0);
++    ui_liquid(t, r, 10, 12, 16, 55 + cfg_tint, 0);
 +    ui_ink_dark = ink;
 +}
 +
@@ -3525,10 +3537,10 @@
 +    int ink = ui_ink_dark;
 +
 +    ui_ink_dark = 0;
-+    ui_liquid(t, 0, 8, 10, 14, 125, 0);
++    ui_liquid(t, 0, 8, 10, 14, 75 + cfg_tint, 0);
 +    ui_ink_dark = ink;
 +}
- 
++
 +/* The idle background: a few soft glows in the bar color that drift slowly.
 +   They are drawn tiny and stretched, which makes them smooth. */
 +static void ui_blobs(void)
@@ -3566,7 +3578,7 @@
 +}
 +
 +/* ----- the Preferences panel ----- */
-+#define UI_PREF_ROWS 7
++#define UI_PREF_ROWS 11
 +#define UI_PREF_ROW ui_pr_row   /* height of one row (smaller in a small window) */
 +#define UI_PREF_HEAD ui_pr_head /* space for the title */
 +#define UI_PREF_FOOT ui_pr_foot /* space for the hint at the bottom (none in a small window) */
@@ -3587,7 +3599,8 @@
 +
 +static const char *ui_pref_name[UI_PREF_ROWS] = {
 +    "Volume step", "Hide bars after", "Start fullscreen",
-+    "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action"
++    "Bar color", "Remember volume", "Quit when the queue ends", "Scroll action",
++    "Crossfade", "Sleep timer", "Glass tint", "Roundness"
 +};
 +static const struct { const char *name; int r, g, b; } ui_colors[] = {
 +    { "Blue", 84, 120, 168 }, { "Teal", 66, 148, 156 }, { "Green", 92, 150, 104 },
@@ -3598,6 +3611,26 @@
 +static const av_unused int ui_seek_steps[] = { 1, 2, 3, 5, 10, 15, 30 };
 +static const int ui_vol_steps[] = { 1, 2, 4, 8, 16 };
 +static const int ui_hide_steps[] = { 1, 2, 3, 4, 5, 8, 10, 15, 30 };
++
++/* v46: the rows are numbered as they were (and the four new ones 7 to 10); this is the order they are shown in, top to bottom */
++static const int ui_pref_map[UI_PREF_ROWS] = { 0, 1, 7, 8, 2, 3, 4, 5, 6, 9, 10 };
++
++static int ui_pref_pos(int row)
++{
++    int i;
++
++    for (i = 0; i < UI_PREF_ROWS; i++)
++        if (ui_pref_map[i] == row)
++            return i;
++    return 0;
++}
++
++/* The rows that are a slider and not a list of choices */
++static int ui_pref_slider(int row)
++{
++    return row == 0 || row == 1 || row == 7 || row == 8 || row == 9 || row == 10;
++}
++static void ui_sleep_set_minutes(int m);
 +
 +/* Rows with arrows (the others switch On/Off when clicked) */
 +static av_unused int ui_pref_arrows(int row)
@@ -3656,6 +3689,8 @@
 +    int n = 0, i, b = 0;
 +
 +    *sel = -1;
++    if (ui_pref_slider(row))
++        return 0;                               /* v46: a slider has no list */
 +    row++;
 +    switch (row) {
 +    case 0:
@@ -3765,7 +3800,7 @@
 +    SDL_Rect r[10];
 +    const char *names[10];
 +    char store[10][20];
-+    int n, i, sel, px, cy = p->y + UI_PREF_HEAD + row * UI_PREF_ROW + UI_PREF_ROW / 2;
++    int n, i, sel, px, cy = p->y + UI_PREF_HEAD + ui_pref_pos(row) * UI_PREF_ROW + UI_PREF_ROW / 2;
 +
 +    if (row < 0 || row >= UI_PREF_ROWS || ui_pref_open[row] < 0.4)
 +        return -1;
@@ -3833,6 +3868,155 @@
 +    settings_save();
 +}
 +
++/* ----- v46: the sliders. Each has a range, what it shows, and how it is put into the setting ----- */
++static int ui_pref_drag = -1;           /* the slider that is being dragged (-1 = none) */
++
++static double ui_sl_lo(int r)
++{
++    return r == 1 ? 0.5 : r == 0 ? 1.0 : 0.0;
++}
++
++static double ui_sl_hi(int r)
++{
++    return r == 0 ? 16.0 : r == 1 ? 30.0 : r == 7 ? 10.0 : r == 8 ? 120.0 : 100.0;
++}
++
++static double ui_sl_get(int r)
++{
++    switch (r) {
++    case 0: return cfg_vol_step;
++    case 1: return cfg_hide_delay / 1000000.0;
++    case 7: return cfg_crossfade;
++    case 8: return q_sleep_end ? ceil((q_sleep_end - av_gettime_relative()) / 60000000.0) : 0.0;     /* the minutes left of the timer that runs */
++    case 9: return cfg_tint;
++    default: return cfg_round;
++    }
++}
++
++static void ui_sl_put(int r, double v)
++{
++    v = av_clipd(v, ui_sl_lo(r), ui_sl_hi(r));
++    switch (r) {
++    case 0: cfg_vol_step = (int)(v + 0.5); break;
++    case 1:
++        v = v < 3.0 ? floor(v * 10.0 + 0.5) / 10.0 : v < 10.0 ? floor(v * 2.0 + 0.5) / 2.0 : floor(v + 0.5);
++        cfg_hide_delay = (int64_t)(v * 1000000.0);
++        break;
++    case 7: cfg_crossfade = (int)(v + 0.5); break;
++    case 8: ui_sleep_set_minutes((int)(v + 0.5)); break;
++    case 9: cfg_tint = (int)(v + 0.5); break;
++    default: cfg_round = (int)(v + 0.5); break;
++    }
++}
++
++static double ui_sl_t(int r)
++{
++    double v = av_clipd(ui_sl_get(r), ui_sl_lo(r), ui_sl_hi(r)), lo = ui_sl_lo(r), hi = ui_sl_hi(r);
++
++    return r == 1 ? log(v / lo) / log(hi / lo) : (v - lo) / (hi - lo);      /* the hiding time is finer at the short end */
++}
++
++static void ui_sl_text(int r, char *out, size_t size)
++{
++    switch (r) {
++    case 0: snprintf(out, size, "%d", cfg_vol_step); break;
++    case 1: snprintf(out, size, "%g s", cfg_hide_delay / 1000000.0); break;
++    case 7:
++        if (cfg_crossfade)
++            snprintf(out, size, "%d s", cfg_crossfade);
++        else
++            snprintf(out, size, "Off");
++        break;
++    case 8:
++        if (q_sleep_end)
++            snprintf(out, size, "%d min", (int)ui_sl_get(8));
++        else
++            snprintf(out, size, q_sleep_item ? "Track end" : "Off");
++        break;
++    case 9: snprintf(out, size, "%d%%", cfg_tint); break;
++    default:
++        if (cfg_round)
++            snprintf(out, size, "%d%%", cfg_round);
++        else
++            snprintf(out, size, "Square");
++        break;
++    }
++}
++
++/* One step of the arrow keys and of a notch of the wheel */
++static void ui_sl_nudge(int r, int dir)
++{
++    double v = ui_sl_get(r), st;
++
++    st = r == 1 ? (v < 3.0 - 0.01 || (dir < 0 && v <= 3.0 + 0.01) ? 0.1 : v < 10.0 - 0.01 || (dir < 0 && v <= 10.0 + 0.01) ? 0.5 : 1.0) :
++         r == 8 ? 5.0 : r >= 9 ? 5.0 : 1.0;
++    if (r == 8 && dir < 0 && v <= 5.0)
++        v = 5.0;                                /* down from 5 minutes: off */
++    ui_sl_put(r, v + dir * st);
++    settings_save();
++}
++
++/* Where the slider of a row is: the track from x0 to x1, the value after it. The same column for every row. */
++static void ui_sl_geom(const SDL_Rect *p, int *x0, int *x1, int *xr)
++{
++    int vw = ui_text_width("120 min", ui_pr_px) + 6;
++
++    *xr = p->x + p->w - ui_pr_mg;
++    *x0 = p->x + ui_pr_mg + UI_PREF_ICW + ui_text_width("Hide bars after", ui_pr_px) + 30;
++    *x1 = *xr - vw - 18;
++    if (*x1 - *x0 < 70)
++        *x0 = *x1 - 70;
++}
++
++static int ui_sl_hit(const SDL_Rect *p, int r, int x)
++{
++    int x0, x1, xr;
++
++    ui_sl_geom(p, &x0, &x1, &xr);
++    return x >= x0 - 12 && x <= x1 + 12;
++}
++
++static void ui_sl_drag_to(const SDL_Rect *p, int r, int x)
++{
++    int x0, x1, xr;
++    double t, lo = ui_sl_lo(r), hi = ui_sl_hi(r);
++
++    ui_sl_geom(p, &x0, &x1, &xr);
++    t = av_clipd((double)(x - x0) / FFMAX(x1 - x0, 1), 0.0, 1.0);
++    ui_sl_put(r, r == 1 ? lo * pow(hi / lo, t) : lo + (hi - lo) * t);
++}
++
++static void ui_sl_draw(const SDL_Rect *p, int r, int cy)
++{
++    SDL_Rect tr, fill, knob;
++    char text[32];
++    int x0, x1, xr, d, hot = r == ui_prefs_hover || r == ui_pref_drag;
++    double t = av_clipd(ui_sl_t(r), 0.0, 1.0);
++
++    ui_sl_geom(p, &x0, &x1, &xr);
++    tr.x = x0;
++    tr.y = cy - 3;
++    tr.w = x1 - x0;
++    tr.h = 6;
++    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 45);
++    ui_pill(&tr);                               /* the track, as on the seek bar */
++    fill = tr;
++    fill.w = FFMAX((int)(tr.w * t), tr.h);
++    SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 60, 0, 255), av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255),
++                           hot ? 235 : 200);
++    ui_pill(&fill);                             /* the part before the knob: a lighter shade of the bar color */
++    d = r == ui_pref_drag ? 20 : hot ? 17 : 14;
++    knob.w = knob.h = d;
++    knob.x = x0 + (int)((x1 - x0) * t) - d / 2;
++    knob.y = cy - d / 2;
++    SDL_SetRenderDrawColor(renderer, 245, 245, 245, 245);
++    ui_pill(&knob);
++    ui_sl_text(r, text, sizeof(text));
++    ui_label(xr - ui_text_width(text, ui_pr_px), cy, text, ui_pr_px, hot ? 255 : 225, hot ? 255 : 225, hot ? 255 : 225, 255);
++    if (r == 8 && q_sleep_end)
++        ui_prefs_anim = 1;                      /* the timer runs: the knob follows it */
++}
++
 +static SDL_Rect ui_prefs_rect(int ww, int wh)
 +{
 +    SDL_Rect p;
@@ -3886,7 +4070,7 @@
 +    last = now;
 +    ui_prefs_anim = 0;
 +    for (i = 0; i < UI_PREF_ROWS; i++) {        /* the rows glide toward their choices, or back */
-+        double tgt = i == ui_prefs_hover ? 1.0 : 0.0;
++        double tgt = (i == ui_prefs_hover && !ui_pref_slider(i)) ? 1.0 : 0.0;
 +
 +        ui_pref_open[i] += (tgt - ui_pref_open[i]) * (1.0 - exp(-dt / 0.07));
 +        if (fabs(tgt - ui_pref_open[i]) < 0.005)
@@ -3896,7 +4080,7 @@
 +    }
 +    SDL_GetWindowSize(window, &ww, &wh);
 +    wt = 600.0;                                 /* the panel grows if the name and the choices of the row under the mouse need more */
-+    if (ui_prefs_hover >= 0 && ui_prefs_hover < UI_PREF_ROWS)
++    if (ui_prefs_hover >= 0 && ui_prefs_hover < UI_PREF_ROWS && !ui_pref_slider(ui_prefs_hover))
 +        wt = FFMAX(wt, ui_pref_need_w(ui_prefs_hover));
 +    wt = FFMIN(wt, ww - 16);
 +    ui_prefs_w += (wt - ui_prefs_w) * (1.0 - exp(-dt / 0.09));
@@ -3911,19 +4095,24 @@
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 +    ui_label(p.x + ui_pr_mg, p.y + UI_PREF_HEAD / 2 + 4, "Preferences", ui_pr_tpx, 245, 245, 245, 255);
 +    for (i = 0; i < UI_PREF_ROWS; i++) {
-+        cy = p.y + UI_PREF_HEAD + i * UI_PREF_ROW + UI_PREF_ROW / 2;
++        cy = p.y + UI_PREF_HEAD + ui_pref_pos(i) * UI_PREF_ROW + UI_PREF_ROW / 2;
 +        e = ui_pref_open[i];
 +        se = e * e * (3.0 - 2.0 * e);
 +        k = 1.0 - se;                           /* how much of the value is still showing */
 +        {
 +            static const int pic[UI_PREF_ROWS] = { UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP,
-+                                                   UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE };
++                                                   UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE, UI_IC_FADE, UI_IC_MOON,
++                                                   UI_IC_DROP, UI_IC_EXPAND };
 +
 +            ui_icon(pic[i], p.x + ui_pr_mg + (int)(10 * se), cy, av_clip(ui_pr_px, 14, 22), 245, 245, 245,
 +                    i == ui_prefs_hover ? 255 : 170);
 +        }
 +        ui_label(p.x + ui_pr_mg + UI_PREF_ICW + (int)(10 * se), cy, ui_pref_name[i], ui_pr_px, 245, 245, 245,
 +                 i == ui_prefs_hover ? 255 : 210);      /* the name nudges a little to make room, like a volume bar coming in from the side */
++        if (ui_pref_slider(i)) {                /* v46 */
++            ui_sl_draw(&p, i, cy);
++            continue;
++        }
 +
 +        if (k > 0.01) {
 +            ui_pref_value(i, value, sizeof(value));
@@ -3977,7 +4166,7 @@
 +        }
 +    }
 +    if (UI_PREF_FOOT >= 30)
-+        ui_label(p.x + ui_pr_mg, p.y + p.h - UI_PREF_FOOT / 2, "Move the mouse onto a setting to see its choices.  Esc closes.",
++        ui_label(p.x + ui_pr_mg, p.y + p.h - UI_PREF_FOOT / 2, "Hover for the choices. Sliders: drag, scroll or arrows. Esc closes.",
 +             15, 170, 170, 170, 255);
 +}
 +
@@ -3994,6 +4183,8 @@
 +    row = (y >= p.y + UI_PREF_HEAD) ? (y - p.y - UI_PREF_HEAD) / UI_PREF_ROW : -1;
 +    if (row >= UI_PREF_ROWS || x < p.x || x >= p.x + p.w)
 +        row = -1;
++    if (row >= 0)
++        row = ui_pref_map[row];                 /* v46: the row number as it is kept */
 +    ui_wake();
 +    ui_prefs_mx = x;
 +    ui_prefs_my = y;
@@ -4004,6 +4195,12 @@
 +        if (ev->button.button != SDL_BUTTON_LEFT || x < p.x || x >= p.x + p.w ||
 +            y < p.y || y >= p.y + p.h) {
 +            ui_prefs_open = 0;                  /* right-click or a click outside closes it */
++        } else if (row >= 0 && ui_pref_slider(row)) {
++            if (ui_sl_hit(&p, row, x)) {        /* v46: the slider takes the mouse until the button is let go */
++                ui_pref_drag = row;
++                SDL_CaptureMouse(SDL_TRUE);
++                ui_sl_drag_to(&p, row, x);
++            }
 +        } else if (row >= 0) {
 +            int c = ui_pref_chip_at(row, &p, x, y);
 +
@@ -4014,6 +4211,75 @@
 +    if (is)
 +        is->force_refresh = 1;
 +    return 1;
++}
++
++/* v46: while the panel is open, the wheel, a two finger swipe and the arrow keys move the slider the mouse is on, and a drag that
++   goes outside the panel goes on. Returns 1 if the event was used. */
++static int ui_prefs_event(VideoState *is, SDL_Event *ev)
++{
++    static double acc = 0.0;
++    int r = ui_prefs_hover;
++    SDL_Rect p;
++    int ww, wh;
++
++    if (!ui_prefs_open) {
++        ui_pref_drag = -1;
++        return 0;
++    }
++    SDL_GetWindowSize(window, &ww, &wh);
++    p = ui_prefs_rect(ww, wh);
++    if (ev->type == SDL_MOUSEMOTION && ui_pref_drag >= 0) {
++        ui_sl_drag_to(&p, ui_pref_drag, ev->motion.x);
++        ui_wake();
++        if (is)
++            is->force_refresh = 1;
++        return 1;
++    }
++    if (ev->type == SDL_MOUSEBUTTONUP && ui_pref_drag >= 0) {
++        ui_pref_drag = -1;
++        SDL_CaptureMouse(SDL_FALSE);
++        settings_save();
++        if (is)
++            is->force_refresh = 1;
++        return 1;
++    }
++    if (ev->type == SDL_MOUSEWHEEL) {
++        double ay = ev->wheel.preciseY;
++        int steps;
++
++        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
++            ay = -ay;
++        if (r >= 0 && ui_pref_slider(r)) {
++            if (ay * acc < 0.0)
++                acc = 0.0;
++            acc += ay;
++            steps = (int)acc;
++            if (steps) {
++                acc -= steps;
++                ui_sl_nudge(r, steps > 0 ? -1 : 1);     /* the same way round as the volume swipe: up = more */
++            }
++        }
++        ui_wake();
++        if (is)
++            is->force_refresh = 1;
++        return 1;                               /* the panel is up: nothing else uses the wheel */
++    }
++    if (ev->type == SDL_KEYDOWN && r >= 0 && ui_pref_slider(r)) {
++        SDL_Keycode k = ev->key.keysym.sym;
++        int dir = (k == SDLK_UP || k == SDLK_RIGHT || k == SDLK_PAGEUP) ? 1 : (k == SDLK_DOWN || k == SDLK_LEFT || k == SDLK_PAGEDOWN) ? -1 : 0;
++
++        if (dir) {
++            int n = (k == SDLK_PAGEUP || k == SDLK_PAGEDOWN) ? 4 : 1;
++
++            while (n--)
++                ui_sl_nudge(r, dir);
++            ui_wake();
++            if (is)
++                is->force_refresh = 1;
++            return 1;
++        }
++    }
++    return 0;
 +}
 +
 +/* Draw one whole frame with frosted glass: used while a menu or the Preferences panel is up,
@@ -4028,9 +4294,8 @@
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -4589,6 +4854,25 @@
 +    if (q_sleep_end)
 +        return av_clip(ui_sleep_sel, 2, 5);
 +    return q_sleep_item ? 1 : 0;
++}
++
++/* v46: the sleep timer for any number of minutes (0 = off); the sound fades out over its last 20 seconds, as for the others */
++static void ui_sleep_set_minutes(int m)
++{
++    static const int minutes[6] = { 0, 0, 5, 10, 30, 60 };
++    int i, best = 2;
++
++    if (m <= 0) {
++        ui_sleep_choose(0);
++        return;
++    }
++    q_sleep_item = NULL;
++    q_sleep_end = av_gettime_relative() + (int64_t)m * 60 * 1000000;
++    ui_sleep_gain = 1.0f;
++    for (i = 3; i <= 5; i++)                    /* the queue panel marks the nearest of its own choices */
++        if (abs(minutes[i] - m) < abs(minutes[best] - m))
++            best = i;
++    ui_sleep_sel = best;
 +}
 +
 +/* What the sleep row says while it is closed */
@@ -6629,7 +6913,7 @@
 +    double cyt = t->y + t->h / 2.0, kin = 1.0 - 0.16 * fabs(tilt);
 +    SDL_Color c;
 +
-+    rr = av_clip(rr, 0, FFMIN(t->w, t->h) / 2);
++    rr = (int)(av_clip(rr, 0, FFMIN(t->w, t->h) / 2) * ui_round_k() + 0.5);     /* v46 */
 +    c.r = (Uint8)md;
 +    c.g = (Uint8)md;
 +    c.b = (Uint8)md;
@@ -9955,7 +10239,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +11235,14 @@
+@@ -1456,9 +11519,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -9970,7 +10254,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +11278,11 @@
+@@ -1494,9 +11562,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -9985,7 +10269,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +11543,30 @@
+@@ -1757,6 +11827,30 @@
      return 0;
  }
  
@@ -10016,7 +10300,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +11582,11 @@
+@@ -1772,6 +11866,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -10028,7 +10312,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +11856,11 @@
+@@ -2041,6 +12140,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -10040,7 +10324,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +12250,7 @@
+@@ -2430,7 +12534,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -10049,7 +10333,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +12271,24 @@
+@@ -2451,12 +12555,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -10076,7 +10360,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +12501,8 @@
+@@ -2669,7 +12785,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -10086,7 +10370,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +12567,13 @@
+@@ -2734,6 +12851,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -10100,7 +10384,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +12689,7 @@
+@@ -2849,6 +12973,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -10108,7 +10392,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +12787,10 @@
+@@ -2946,6 +13071,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -10119,7 +10403,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +12810,19 @@
+@@ -2965,6 +13094,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -10139,7 +10423,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +12858,13 @@
+@@ -3000,8 +13142,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -10155,7 +10439,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3111,8 +12974,10 @@
+@@ -3111,8 +13258,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -10167,7 +10451,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +12989,7 @@
+@@ -3124,7 +13273,7 @@
      return is;
  }
  
@@ -10176,7 +10460,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +13068,83 @@
+@@ -3203,13 +13352,83 @@
  }
  
  
@@ -10232,9 +10516,8 @@
 +        ui_pip_left_fs();
 +    if (!is_full_screen && ui_maxed)
 +        ui_max_set(1);
- }
- 
--static void toggle_audio_display(VideoState *is)
++}
++
 +/* A double tap in the picture: window or filled window -> complete full screen (no bars at all) -> the filled window,
 +   with the title bar and the panel of the window manager, where the corners can be dragged -> complete full screen... */
 +static void ui_fs_cycle(VideoState *is)
@@ -10255,13 +10538,14 @@
 +        is_full_screen = 1;
 +        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 +    }
-+}
-+
+ }
+ 
+-static void toggle_audio_display(VideoState *is)
 +static av_unused void toggle_audio_display(VideoState *is)
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13156,1672 @@
+@@ -3221,24 +13440,1672 @@
      }
  }
  
@@ -11937,7 +12221,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +14849,1016 @@
+@@ -3266,6 +15133,1018 @@
  }
  
  /* handle an event sent by the GUI */
@@ -12783,6 +13067,8 @@
 +        while (SDL_PollEvent(&ev)) {
 +            if (ev.type != SDL_QUIT && ui_pk_event(NULL, &ev))      /* v44 */
 +                continue;
++            if (ev.type != SDL_QUIT && ui_prefs_open && ui_prefs_event(NULL, &ev))      /* v46 */
++                continue;
 +            switch (ev.type) {
 +            case SDL_QUIT:
 +                do_exit(NULL);
@@ -12954,11 +13240,13 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +15867,101 @@
+@@ -3274,86 +16153,103 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
 +        if (ui_pk_event(cur_stream, &event))    /* v44: the picker uses the keys, the typing and the wheel while it is open */
++            continue;
++        if (ui_prefs_open && ui_prefs_event(cur_stream, &event))        /* v46: the sliders */
 +            continue;
          switch (event.type) {
 +        case SDL_TEXTINPUT:                     /* v37: typing in the tiled view searches */
@@ -13106,7 +13394,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +15978,86 @@
+@@ -3370,40 +16266,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -13205,7 +13493,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +16094,23 @@
+@@ -3440,9 +16382,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -13229,7 +13517,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +16120,21 @@
+@@ -3452,9 +16408,21 @@
              }
              break;
          case SDL_QUIT:
@@ -13252,7 +13540,7 @@
          default:
              break;
          }
-@@ -3526,15 +16206,11 @@
+@@ -3526,15 +16494,11 @@
  
  static int opt_input_file(void *optctx, const char *filename)
  {
@@ -13271,7 +13559,7 @@
  
      return 0;
  }
-@@ -3678,13 +16354,7 @@
+@@ -3678,13 +16642,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -13286,7 +13574,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +16370,21 @@
+@@ -3700,6 +16658,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -13308,7 +13596,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +16402,9 @@
+@@ -3717,10 +16690,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -13320,7 +13608,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +16412,7 @@
+@@ -3728,7 +16700,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -13329,7 +13617,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +16426,75 @@
+@@ -3742,15 +16714,75 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v46
+- Preferences has sliders, in the seek bar's style (a lighter shade of the bar color) with the value at the end: Volume step (1 to 16), Hide bars after (0.5 to 30 s, finer at the short end), Crossfade (Off to 10 s, whole seconds), Sleep timer (Off to 120 min, it follows the timer that runs). Drag one, or rest the mouse on its row and use the wheel, a two finger swipe up or down (up = more, like the volume swipe) or the Up, Down, Left and Right keys.
+- Glass tint: how strong the smoked veil under the glass is (panels, menus and the bar); 50% is as it was. Roundness: the corner radius of panels, menus, tiles, buttons and bars together; 100% is as it was, 0 makes everything square. Both are seen live in the Preferences panel while the slider moves, and are kept in settings.conf (glass_tint, roundness).
+
 ## v45
 - The file picker sorts by Name, Date or Size (buttons on the path bar; a click on the active one turns the order round; folders stay first; ticked files stay ticked). Right click on a row opens a small menu instead of going up a folder: Play now / Add to queue for a file, Open folder / Play folder / Add folder to queue for a folder.
 - The x of a queue item shows only on the row the mouse is on, and it is a smooth one.
