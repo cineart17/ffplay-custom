@@ -3324,8 +3324,22 @@ static void ui_inbox_tick(VideoState *is)
             queue_clear();          /* nothing is playing: open now, with a fresh queue */
             opened = 1;
         }                           /* while something plays, an 'o' is added to the queue like an 'a' */
-        if (line[0] == 'o' || line[0] == 'a')
+        if (line[0] == 'o' || line[0] == 'a') {
             queue_add_path(line + 1);
+        } else if (line[0] == 'n') {            /* v48: play next: it goes right after the item that plays now */
+            static int pn_pos = -2, pn_cnt = 0;
+            int before = q_count, k, base;
+
+            queue_add_path(line + 1);
+            if (q_pos != pn_pos) {              /* the item changed: a new run of "next" items starts */
+                pn_pos = q_pos;
+                pn_cnt = 0;
+            }
+            base = FFMAX(q_pos, -1) + 1 + pn_cnt;   /* after the ones already put there, so they play in the order chosen */
+            for (k = 0; k < q_count - before; k++)
+                queue_move(before + k, FFMIN(base + k, before + k));
+            pn_cnt += q_count - before;
+        }
     }
     fclose(f);
     unlink(work);
@@ -5785,8 +5799,7 @@ static int ui_q_slot_item(int slot, int drop)
 static int ui_q_hit(const SDL_Rect *p, int wh, int x, int y, int *item)
 {
     int top = p->y + UI_Q_PAD + UI_Q_HEAD, slot, drop = 0, right = p->x + p->w;
-    int fy = top + ui_q_visible(wh) * UI_Q_ROW, i;
-    SDL_Rect chip[8];
+    int fy = top + ui_q_visible(wh) * UI_Q_ROW;
 
     *item = -1;
     if (x < p->x || x >= right || y < p->y || y >= p->y + p->h)
@@ -5805,30 +5818,10 @@ static int ui_q_hit(const SDL_Rect *p, int wh, int x, int y, int *item)
         return UI_Q_ADD;
     }
     if (y >= fy) {                              /* under the list */
-        if (y >= fy + 6 && y < fy + 46) {       /* crossfade: the choices are there while the mouse is on the row */
-            if (ui_q_hover_kind == UI_Q_XFROW || ui_q_hover_kind == UI_Q_XFCHIP) {
-                int xpx;
-
-                ui_q_chips_for(p, fy + 26, ui_text_width("Crossfade", 18), 7, ui_xf_names, ui_xf_names, chip, &xpx);
-                for (i = 0; i < 7; i++)
-                    if (x >= chip[i].x && x < chip[i].x + chip[i].w) {
-                        *item = i;
-                        return UI_Q_XFCHIP;
-                    }
-            }
+        if (y >= fy + 6 && y < fy + 46)         /* crossfade */
             return UI_Q_XFROW;
-        }
-        if (y >= fy + 46 && y < fy + 86) {      /* sleep timer */
-            if (ui_q_hover_kind == UI_Q_SLEEP || ui_q_hover_kind == UI_Q_CHIP) {    /* the choices are showing */
-                ui_q_chips(p, fy + 66, chip);
-                for (i = 0; i < 6; i++)
-                    if (x >= chip[i].x && x < chip[i].x + chip[i].w) {
-                        *item = i;
-                        return UI_Q_CHIP;
-                    }
-            }
+        if (y >= fy + 46 && y < fy + 86)        /* sleep timer */
             return UI_Q_SLEEP;
-        }
         return UI_Q_NONE;
     }
     slot = (y - top) / UI_Q_ROW;
@@ -6078,6 +6071,80 @@ static void ui_sleep_text(char *out, size_t size)
     }
 }
 
+/* ----- v48: Crossfade and Sleep timer in the queue panel are sliders, like the ones in Preferences -----
+   No cascade any more: the track and its fill (a lighter shade of the bar color), the value at the end, and the name nudges in
+   from the left margin while the mouse is on the row. The sleep timer slider has its own stops: Off, End of track, then minutes. */
+#define UI_QS_N 10
+static const int ui_qs_min[UI_QS_N] = { 0, 0, 5, 10, 15, 30, 45, 60, 90, 120 };
+static int ui_qs_drag = -1;             /* the slider being dragged: 0 = crossfade, 1 = sleep timer, -1 = none */
+static double ui_qs_nud[2];             /* 0 to 1: how far the name of each row has moved for the mouse on it */
+
+/* The stop the sleep timer is at: it follows the timer that runs (the nearest stop to the minutes left) */
+static int ui_qs_stop_cur(void)
+{
+    int i, best = 2, left;
+
+    if (q_sleep_end) {
+        left = (int)((q_sleep_end - av_gettime_relative() + 59999999) / 60000000);
+        for (i = 3; i < UI_QS_N; i++)
+            if (abs(ui_qs_min[i] - left) < abs(ui_qs_min[best] - left))
+                best = i;
+        return best;
+    }
+    return q_sleep_item ? 1 : 0;
+}
+
+static void ui_qs_set_stop(int s)
+{
+    s = av_clip(s, 0, UI_QS_N - 1);
+    if (s == ui_qs_stop_cur())
+        return;
+    if (s < 2)
+        ui_sleep_choose(s);
+    else
+        ui_sleep_set_minutes(ui_qs_min[s]);
+}
+
+/* Where the sliders are: the track from x0 to x1, the value after it. The same column for both rows. */
+static void ui_qs_geom(const SDL_Rect *p, int *x0, int *x1, int *xr)
+{
+    *xr = p->x + p->w - 20;
+    *x1 = *xr - ui_text_width("119:59 left", 18) - 18;
+    *x0 = p->x + 20 + UI_Q_ICW + ui_text_width("Sleep timer", 18) + 22;
+    if (*x1 - *x0 < 60)
+        *x0 = *x1 - 60;
+}
+
+static int ui_qs_hit(const SDL_Rect *p, int x)
+{
+    int x0, x1, xr;
+
+    ui_qs_geom(p, &x0, &x1, &xr);
+    return x >= x0 - 12 && x <= x1 + 12;
+}
+
+static void ui_qs_drag_to(const SDL_Rect *p, int row, int x)
+{
+    int x0, x1, xr;
+    double t;
+
+    ui_qs_geom(p, &x0, &x1, &xr);
+    t = av_clipd((double)(x - x0) / FFMAX(x1 - x0, 1), 0.0, 1.0);
+    if (row == 0)
+        cfg_crossfade = av_clip((int)(t * 10.0 + 0.5), 0, 10);
+    else
+        ui_qs_set_stop((int)(t * (UI_QS_N - 1) + 0.5));
+}
+
+static void ui_qs_nudge(int row, int dir)
+{
+    if (row == 0)
+        cfg_crossfade = av_clip(cfg_crossfade + dir, 0, 10);
+    else
+        ui_qs_set_stop(ui_qs_stop_cur() + dir);
+    settings_save();
+}
+
 /* h:mm:ss, or m:ss when the hours are not needed */
 static void ui_fmt_clock(char *out, size_t size, double s, int hours)
 {
@@ -6114,7 +6181,7 @@ static void ui_q_draw(int ww, int wh)
     int top = p.y + UI_Q_PAD + UI_Q_HEAD;
     int right = p.x + p.w;
     int max_w = p.w - 20 - 94;
-    int drop = 0, i, item, cy, lit, hk = ui_q_hover_kind, fy, marker, sel;
+    int drop = 0, i, item, cy, lit, hk = ui_q_hover_kind, fy, marker;
     int paused = ui_menu_stream && ui_menu_stream->paused;
     int64_t now = av_gettime_relative();
     double cur = 0, c;
@@ -6217,109 +6284,52 @@ static void ui_q_draw(int ww, int wh)
     SDL_RenderFillRect(renderer, &sep);
 
     ui_fade = ui_cascade(vis + 1);
-    /* crossfade: its name stays; the choices squeeze in on the right of it while the mouse is on the row */
-    cy = fy + 26;
+    /* v48: crossfade and sleep timer: a slider each, with the name nudging in from the left margin while the mouse is on the row */
     {
-        double tgt = (hk == UI_Q_XFROW || hk == UI_Q_XFCHIP) ? 1.0 : 0.0, se, ek, dt, hx = right - 20;
-        int64_t t2 = av_gettime_relative();
-        SDL_Rect xr[8];
-        const char *const *xn;
-        int xpx, cur = 0, k;
+        static int64_t qs_last = 0;
+        int64_t tq = av_gettime_relative();
+        double dtq = tq - qs_last > 100000 ? 0.016 : (tq - qs_last) / 1000000.0;
+        int row;
 
-        dt = t2 - ui_xf_last > 100000 ? 0.016 : (t2 - ui_xf_last) / 1000000.0;
-        ui_xf_last = t2;
-        ui_xf_e += (tgt - ui_xf_e) * (1.0 - exp(-dt / 0.07));
-        if (fabs(tgt - ui_xf_e) < 0.005)
-            ui_xf_e = tgt;
-        ui_xf_anim = ui_xf_e != tgt;
-        se = ui_xf_e * ui_xf_e * (3.0 - 2.0 * ui_xf_e);
-        ek = 1.0 - se;
-        ui_icon(UI_IC_FADE, p.x + 20 + (int)(10 * se), cy, 18, 240, 240, 240, 190);
-        ui_label(p.x + 20 + UI_Q_ICW + (int)(10 * se), cy, "Crossfade", 18, 240, 240, 240, 210);    /* the name nudges to usher the choices in */
-        if (ek > 0.01) {
-            if (cfg_crossfade)
-                snprintf(text, sizeof(text), "%d s", cfg_crossfade);
-            else
-                snprintf(text, sizeof(text), "Off");
-            if (cfg_crossfade)
-                ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, 245, 245, 245, (int)(255 * ek));
-            else
-                ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, 150, 150, 150, (int)(255 * ek));
-        }
-        if (ui_xf_e <= 0.01)
-            memset(ui_xf_pop, 0, sizeof(ui_xf_pop));
-        if (ui_xf_e > 0.01) {
-            for (k = 1; k < 7; k++)
-                if (abs(ui_xf_vals[k] - cfg_crossfade) < abs(ui_xf_vals[cur] - cfg_crossfade))
-                    cur = k;
-            xn = ui_q_chips_for(&p, cy, ui_text_width("Crossfade", 18), 7, ui_xf_names, ui_xf_names, xr, &xpx);
-            for (k = 0; k < 7; k++) {
-                int hot = hk == UI_Q_XFCHIP && ui_q_hover_idx == k, mv = 0, ly;
-                double cxc = xr[k].x + xr[k].w / 2.0, cx = hx + (cxc - hx) * se, pe;
+        qs_last = tq;
+        ui_xf_anim = 0;
+        ui_chip_anim = 0;
+        for (row = 0; row < 2; row++) {
+            SDL_Rect tr, fill;
+            int rcy = fy + (row ? 66 : 26), x0, x1, xr, mv = 0, nudge;
+            int hot = row == ui_qs_drag || (row ? hk == UI_Q_SLEEP : hk == UI_Q_XFROW);
+            double ne = ui_pop_step(&ui_qs_nud[row], hot, dtq, &mv), t;
 
-                pe = ui_pop_step(&ui_xf_pop[k], hot, dt, &mv);      /* the choice under the mouse rises and brightens */
-                if (mv)
-                    ui_xf_anim = 1;
-                ly = cy - (int)(UI_POP * pe + 0.5);
-                if (k == cur)
-                    ui_label_c((int)cx, ly, xn[k], xpx, av_clip(cfg_bar_r + 40 + (int)(30 * pe), 0, 255),
-                               av_clip(cfg_bar_g + 40 + (int)(30 * pe), 0, 255), av_clip(cfg_bar_b + 40 + (int)(30 * pe), 0, 255),
-                               (int)(255 * se));
+            if (mv)
+                ui_xf_anim = 1;
+            nudge = (int)(UI_PREF_NUDGE * ne + 0.5);
+            ui_icon(row ? UI_IC_MOON : UI_IC_FADE, p.x + 20 + nudge, rcy, 18, 240, 240, 240, hot ? 255 : 190);
+            ui_label(p.x + 20 + UI_Q_ICW + nudge, rcy, row ? "Sleep timer" : "Crossfade", 18, 240, 240, 240, hot ? 255 : 210);
+            ui_qs_geom(&p, &x0, &x1, &xr);
+            t = row ? ui_qs_stop_cur() / (double)(UI_QS_N - 1) : cfg_crossfade / 10.0;
+            tr.x = x0;
+            tr.h = hot ? 8 : 6;
+            tr.y = rcy - tr.h / 2;
+            tr.w = x1 - x0;
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, (int)(45 * ui_fade));
+            ui_pill(&tr);
+            fill = tr;
+            fill.w = t > 0.0 ? FFMAX((int)(tr.w * t), tr.h) : 0;
+            SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 60, 0, 255), av_clip(cfg_bar_g + 60, 0, 255),
+                                   av_clip(cfg_bar_b + 60, 0, 255), (int)((hot ? 235 : 200) * ui_fade));
+            if (fill.w > 0)
+                ui_pill(&fill);
+            if (row == 0) {
+                if (cfg_crossfade)
+                    snprintf(text, sizeof(text), "%d s", cfg_crossfade);
                 else
-                    ui_label_c((int)cx, ly, xn[k], xpx, 215 + (int)(40 * pe), 215 + (int)(40 * pe), 215 + (int)(40 * pe),
-                               (int)((160 + 95 * pe) * se));
+                    snprintf(text, sizeof(text), "Off");
+            } else {
+                ui_sleep_text(text, sizeof(text));
+                if (q_sleep_end)
+                    ui_chip_anim = 1;           /* the timer runs: the fill follows it */
             }
-        }
-    }
-
-    /* sleep timer: its name stays; the choices squeeze in on the right of it while the mouse is on the row */
-    cy = fy + 66;
-    sel = ui_sleep_current();
-    {
-        double tgt = (hk == UI_Q_SLEEP || hk == UI_Q_CHIP) ? 1.0 : 0.0, ek, se, dt, hx = right - 20;
-        int64_t t2 = av_gettime_relative();
-        SDL_Rect sr[8];
-        const char *const *sn;
-        int spx;
-
-        dt = t2 - ui_chip_last > 100000 ? 0.016 : (t2 - ui_chip_last) / 1000000.0;
-        ui_chip_last = t2;
-        ui_chip_e += (tgt - ui_chip_e) * (1.0 - exp(-dt / 0.07));      /* the row glides, it does not jump */
-        if (fabs(tgt - ui_chip_e) < 0.005)
-            ui_chip_e = tgt;
-        ui_chip_anim = ui_chip_e != tgt;
-        se = ui_chip_e * ui_chip_e * (3.0 - 2.0 * ui_chip_e);
-        ek = 1.0 - se;
-        ui_icon(UI_IC_MOON, p.x + 20 + (int)(10 * se), cy, 18, 240, 240, 240, 190);
-        ui_label(p.x + 20 + UI_Q_ICW + (int)(10 * se), cy, "Sleep timer", 18, 240, 240, 240, 210);    /* the name nudges to usher the choices in */
-        if (ek > 0.01) {
-            ui_sleep_text(text, sizeof(text));
-            if (sel)
-                ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, av_clip(cfg_bar_r + 40, 0, 255),
-                         av_clip(cfg_bar_g + 40, 0, 255), av_clip(cfg_bar_b + 40, 0, 255), (int)(255 * ek));
-            else
-                ui_label(right - 20 - ui_text_width(text, 18), cy, text, 18, 150, 150, 150, (int)(255 * ek));
-        }
-        if (ui_chip_e <= 0.01)
-            memset(ui_sl_pop, 0, sizeof(ui_sl_pop));
-        if (ui_chip_e > 0.01) {
-            sn = ui_q_chips_for(&p, cy, ui_text_width("Sleep timer", 18), 6, ui_chip_full, ui_chip_short, sr, &spx);
-            for (i = 0; i < 6; i++) {
-                int hot = hk == UI_Q_CHIP && ui_q_hover_idx == i, mv = 0, ly;
-                double cxc = sr[i].x + sr[i].w / 2.0, cx = hx + (cxc - hx) * se, pe;
-
-                pe = ui_pop_step(&ui_sl_pop[i], hot, dt, &mv);      /* the choice under the mouse rises and brightens */
-                if (mv)
-                    ui_chip_anim = 1;
-                ly = cy - (int)(UI_POP * pe + 0.5);
-                if (i == sel)               /* the choice that is on: in the bar color */
-                    ui_label_c((int)cx, ly, sn[i], spx, av_clip(cfg_bar_r + 40 + (int)(30 * pe), 0, 255),
-                               av_clip(cfg_bar_g + 40 + (int)(30 * pe), 0, 255), av_clip(cfg_bar_b + 40 + (int)(30 * pe), 0, 255),
-                               (int)(255 * se));
-                else
-                    ui_label_c((int)cx, ly, sn[i], spx, 215 + (int)(40 * pe), 215 + (int)(40 * pe), 215 + (int)(40 * pe),
-                               (int)((160 + 95 * pe) * se));
-            }
+            ui_label(xr - ui_text_width(text, 18), rcy, text, 18, hot ? 255 : 225, hot ? 255 : 225, hot ? 255 : 225, 255);
         }
     }
 
@@ -6791,18 +6801,12 @@ static int ui_q_mouse(VideoState *is, SDL_Event *ev, int ww, int wh, int x, int 
             toggle_pause(is);
         else if (q_count > 0)       /* the idle screen: play the queue from the top, or go on after a sleep stop */
             q_forced = (q_hold && q_pos + 1 < q_count) ? q_pos + 1 : 0;
-    } else if (kind == UI_Q_XF_DEC || kind == UI_Q_XF_INC) {
-        cfg_crossfade = av_clip(cfg_crossfade + (kind == UI_Q_XF_INC ? 1 : -1), 0, 10);
-        settings_save();
-    } else if (kind == UI_Q_XFCHIP) {
-        cfg_crossfade = ui_xf_vals[av_clip(item, 0, 6)];
-        settings_save();
-    } else if (kind == UI_Q_XFROW) {
-        /* the row itself: the choices are showing, nothing to do */
-    } else if (kind == UI_Q_CHIP) {
-        ui_sleep_choose(item);
-    } else if (kind == UI_Q_SLEEP) {
-        /* the row itself: the choices are showing, nothing to do */
+    } else if (kind == UI_Q_XFROW || kind == UI_Q_SLEEP) {
+        if (ui_qs_hit(&p, x)) {     /* v48: the slider takes the mouse until the button is let go */
+            ui_qs_drag = kind == UI_Q_SLEEP;
+            SDL_CaptureMouse(SDL_TRUE);
+            ui_qs_drag_to(&p, ui_qs_drag, x);
+        }
     } else if (kind == UI_Q_DEL) {
         was_playing = (item == q_pos);
         queue_remove(item);
@@ -6833,6 +6837,15 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
 
     if (ui_prefs_open)
         return ui_prefs_mouse(is, ev);
+    if (ui_qs_drag >= 0 && ev->type == SDL_MOUSEMOTION) {       /* v48: a slider of the queue panel is being dragged */
+        SDL_GetWindowSize(window, &ww, &wh);
+        p = ui_q_rect(ww, wh);
+        ui_qs_drag_to(&p, ui_qs_drag, ev->motion.x);
+        ui_wake();
+        if (is)
+            is->force_refresh = 1;
+        return 1;
+    }
     if (ui_pk_open)
         return ui_pk_mouse(is, ev);             /* v44 */
     if (ui_tv_ctx_mouse(is, ev))                /* v39: right-click on a tile of the tiled view */
@@ -7024,6 +7037,13 @@ static int ui_queue_release(SDL_Event *ev)
     SDL_Rect p;
     int ww, wh;
 
+    if (ui_qs_drag >= 0 && ev->button.button == SDL_BUTTON_LEFT) {      /* v48: a slider was let go */
+        ui_qs_drag = -1;
+        SDL_CaptureMouse(SDL_FALSE);
+        settings_save();
+        return 1;
+    }
+
     if (ui_q_press >= 0 && ev->button.button == SDL_BUTTON_LEFT) {      /* no drag happened: it was a click, play the item */
         int it = ui_q_press;
 
@@ -7054,6 +7074,19 @@ static int ui_queue_wheel(SDL_Event *ev)
     if (!ui_q_open || (!ui_idle && !ui_menu_open) || ui_prefs_open || !ev->wheel.y)
         return 0;
     SDL_GetWindowSize(window, &ww, &wh);
+    {                                           /* v48: on a slider row the wheel moves the slider, as in Preferences */
+        SDL_Rect p = ui_q_rect(ww, wh);
+        int mx, my, item, kind;
+
+        SDL_GetMouseState(&mx, &my);
+        kind = ui_q_hit(&p, wh, mx, my, &item);
+        if (kind == UI_Q_XFROW || kind == UI_Q_SLEEP) {
+            int y = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -ev->wheel.y : ev->wheel.y;
+
+            ui_qs_nudge(kind == UI_Q_SLEEP, y > 0 ? -1 : 1);       /* the same way round as in Preferences */
+            return 1;
+        }
+    }
     ui_q_scroll = av_clip(ui_q_scroll - ev->wheel.y, 0, FFMAX(q_count - ui_q_visible(wh), 0));
     return 1;
 }
@@ -14038,6 +14071,7 @@ static int ui_pk_cur = 0, ui_pk_touched = 0;    /* the row with the cursor; touc
 static int ui_pk_all = 0, ui_pk_hidden = 0;     /* show all files, show hidden ones */
 static int ui_pk_hrow = -1, ui_pk_hplace = -1, ui_pk_hbtn = -1;      /* under the mouse */
 static double ui_pk_sc = 0.0;                   /* scrolled, in pixels */
+static double ui_pk_goal = -1.0;                /* v48: where the wheel is taking the list (the list glides there); -1 = nowhere */
 static UiPkPlace ui_pk_pl[24];
 static int ui_pk_npl = 0;
 static struct { SDL_Rect r; int upto; } ui_pk_crumb[24];
@@ -14489,10 +14523,10 @@ static void ui_pk_button(const SDL_Rect *r, const char *label, int hot, int prim
 }
 
 /* v45: the menu of a row (right click). A file: Play now, Add to queue. A folder: Open folder, Play folder, Add folder to queue. */
-enum { UI_PK_A_PLAY, UI_PK_A_ADD, UI_PK_A_ENTER };
+enum { UI_PK_A_PLAY, UI_PK_A_ADD, UI_PK_A_ENTER, UI_PK_A_NEXT };
 static int ui_pk_cm_open = 0, ui_pk_cm_x = 0, ui_pk_cm_y = 0, ui_pk_cm_e = -1, ui_pk_cm_n = 0, ui_pk_cm_hot = -1;
-static int ui_pk_cm_act[3];
-static char ui_pk_cm_lab[3][24];
+static int ui_pk_cm_act[4];
+static char ui_pk_cm_lab[4][24];
 
 static SDL_Rect ui_pk_cm_rect(void)
 {
@@ -14521,15 +14555,19 @@ static void ui_pk_cm_start(int row, int x, int y)
         ui_pk_cm_act[0] = UI_PK_A_ENTER;
         snprintf(ui_pk_cm_lab[1], 24, "Play folder");
         ui_pk_cm_act[1] = UI_PK_A_PLAY;
-        snprintf(ui_pk_cm_lab[2], 24, "Add folder to queue");
-        ui_pk_cm_act[2] = UI_PK_A_ADD;
-        ui_pk_cm_n = 3;
+        snprintf(ui_pk_cm_lab[2], 24, "Play folder next");
+        ui_pk_cm_act[2] = UI_PK_A_NEXT;
+        snprintf(ui_pk_cm_lab[3], 24, "Add folder to queue");
+        ui_pk_cm_act[3] = UI_PK_A_ADD;
+        ui_pk_cm_n = 4;
     } else {
         snprintf(ui_pk_cm_lab[0], 24, "Play now");
         ui_pk_cm_act[0] = UI_PK_A_PLAY;
-        snprintf(ui_pk_cm_lab[1], 24, "Add to queue");
-        ui_pk_cm_act[1] = UI_PK_A_ADD;
-        ui_pk_cm_n = 2;
+        snprintf(ui_pk_cm_lab[1], 24, "Play next");
+        ui_pk_cm_act[1] = UI_PK_A_NEXT;
+        snprintf(ui_pk_cm_lab[2], 24, "Add to queue");
+        ui_pk_cm_act[2] = UI_PK_A_ADD;
+        ui_pk_cm_n = 3;
     }
     ui_pk_cur = row;
     ui_pk_touched = 1;
@@ -14550,6 +14588,10 @@ static void ui_pk_cm_do(VideoState *is, int act)
     } else if (act == UI_PK_A_PLAY) {
         ui_pk_send(is, 'o', path);
         ui_pk_close(is);
+    } else if (act == UI_PK_A_NEXT) {           /* v48: the picker stays open, like for Add */
+        ui_pk_send(is, 'n', path);
+        snprintf(ui_pk_note, sizeof(ui_pk_note), "Plays next: %.120s", ui_pk_e[e].name);
+        ui_pk_note_until = av_gettime_relative() + 2500000;
     } else {
         ui_pk_send(is, 'a', path);              /* the picker stays open: more can be added */
         snprintf(ui_pk_note, sizeof(ui_pk_note), "Added: %.120s", ui_pk_e[e].name);
@@ -14594,6 +14636,24 @@ static void ui_pk_draw(void)
     SDL_GetWindowSize(window, &ww, &wh);
     ui_pk_layout(ww, wh, &L);
     ui_pk_clamp_scroll(&L);
+    {                                           /* v48: smooth scrolling, like the list queue */
+        static int64_t last = 0;
+        static double prev = -1.0;
+        int64_t tnow = av_gettime_relative();
+        double dt = tnow - last > 100000 ? 0.016 : (tnow - last) / 1000000.0;
+
+        last = tnow;
+        if (ui_pk_goal >= 0.0 && ui_pk_sc != prev)
+            ui_pk_goal = -1.0;                  /* a key, a click or a new folder moved the list: let it be */
+        if (ui_pk_goal >= 0.0) {
+            ui_pk_sc += (ui_pk_goal - ui_pk_sc) * (1.0 - exp(-dt / 0.08));
+            if (fabs(ui_pk_goal - ui_pk_sc) < 0.5) {
+                ui_pk_sc = ui_pk_goal;
+                ui_pk_goal = -1.0;
+            }
+        }
+        prev = ui_pk_sc;
+    }
     ui_glass(&L.p, 28);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_GetMouseState(&mx, &my);
@@ -15015,8 +15075,12 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
 
         if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
             dy = -dy;
-        ui_pk_sc -= dy * UI_PK_ROW * 2.5;
-        ui_pk_clamp_scroll(&L);
+        {
+            double mx = FFMAX(0.0, ui_pk_nv * (double)UI_PK_ROW - L.list.h);
+            double base = ui_pk_goal >= 0.0 ? ui_pk_goal : ui_pk_sc;
+
+            ui_pk_goal = av_clipd(base - dy * UI_PK_ROW * 2.5, 0.0, mx);
+        }
         return 1;
     }
     if (ev->type == SDL_KEYDOWN) {
