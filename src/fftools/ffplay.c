@@ -16595,13 +16595,70 @@ static int opt_show_mode(void *optctx, const char *opt, const char *arg)
     return 0;
 }
 
+/* v48b: "file:///home/me/My%20Song.mp3" (what a file manager passes for %U) -> "/home/me/My Song.mp3".
+   Returns a new string (av_free it), or NULL when filename is not a file: URI for this computer (it is then used as it is). */
+static int ui_hexval(int c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static char *ui_uri_to_path(const char *filename)
+{
+    const char *p = filename;
+    char *out, *o;
+
+    if (av_strncasecmp(p, "file:/", 6))
+        return NULL;                    /* not a file: URI ("file:name" is left to FFmpeg, as before) */
+    p += 5;
+    if (p[0] == '/' && p[1] == '/') {   /* file://host/path: only an empty host or localhost is this computer */
+        p += 2;
+        if (*p != '/') {
+            if (av_strncasecmp(p, "localhost/", 10))
+                return NULL;
+            p += 9;                     /* on the "/" after localhost */
+        }
+    }
+    out = av_malloc(strlen(p) + 1);
+    if (!out)
+        return NULL;
+    for (o = out; *p; p++) {
+        int h, l;
+
+        if (*p == '%' && (h = ui_hexval((unsigned char)p[1])) >= 0 && (l = ui_hexval((unsigned char)p[2])) >= 0) {
+            if (!(h * 16 + l)) {        /* %00 cannot be in a name: leave the whole thing alone */
+                av_free(out);
+                return NULL;
+            }
+            *o++ = (char)(h * 16 + l);
+            p += 2;
+        } else {
+            *o++ = *p;
+        }
+    }
+    *o = 0;
+    return out;
+}
+
 static int opt_input_file(void *optctx, const char *filename)
 {
+    char *path;
+
     if (!strcmp(filename, "-"))
         filename = "fd:";
-    queue_add_path(filename);
+    path = ui_uri_to_path(filename);    /* v48b: a file: URI becomes a plain path */
+    if (path)
+        filename = path;
+    queue_add_path(filename);           /* the queue keeps its own copy */
     if (!input_filename)
-        input_filename = filename;      /* used for the window title */
+        input_filename = filename;      /* used for the window title (a decoded path stays allocated for that) */
+    else
+        av_free(path);
 
     return 0;
 }

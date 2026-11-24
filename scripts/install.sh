@@ -47,7 +47,7 @@ TryExec=$HOME/.local/bin/ffplay-custom
 Icon=$LOGO
 Terminal=false
 Categories=AudioVideo;Audio;Video;Player;
-MimeType=audio/mpeg;audio/flac;audio/mp4;audio/x-m4a;audio/ogg;audio/opus;audio/x-opus+ogg;video/mp4;video/x-matroska;video/webm;
+MimeType=audio/mpeg;audio/mp4;audio/x-m4a;audio/ogg;audio/opus;audio/x-opus+ogg;audio/flac;audio/wav;audio/x-wav;audio/webm;video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/ogg;
 EOF
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 echo "Added ffplay-custom to the app menu."
@@ -66,10 +66,11 @@ cat << 'DESK' > "$DESKTOP_DIR/ffplay-custom.desktop"
 Type=Application
 Name=ffplay-custom
 Comment=Custom media player based on FFmpeg and SDL2
-Exec=ffplay-custom %U
+Exec=ffplay-custom %F
 Icon=$HOME/.config/ffplay-custom/logo.png
 Terminal=false
-Categories=AudioVideo;Player;
+Categories=AudioVideo;Audio;Video;Player;
+MimeType=audio/mpeg;audio/mp4;audio/x-m4a;audio/ogg;audio/opus;audio/x-opus+ogg;audio/flac;audio/wav;audio/x-wav;audio/webm;video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/ogg;
 DESK
 sed -i "s|\$HOME|$HOME|g" "$DESKTOP_DIR/ffplay-custom.desktop"
 if [ -d "$HOME/Desktop" ] && [ ! -f "$HOME/Desktop/ffplay-custom.desktop" ]; then

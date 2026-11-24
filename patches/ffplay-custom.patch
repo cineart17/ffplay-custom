@@ -3559,7 +3559,7 @@
 +static void ui_glass(const SDL_Rect *t, int r)
 +{
 +    int ink = ui_ink_dark;
- 
++
 +    ui_ink_dark = 0;                            /* the glass itself is drawn as it is */
 +    ui_liquid(t, r, 22 + cfg_bar_r / 16, 24 + cfg_bar_g / 16, 28 + cfg_bar_b / 16, 30 + 2 * cfg_tint, 1);    /* the blurred picture, under a smoked veil (strong enough for white text on a bright picture) */
 +    ui_ink_dark = ink;
@@ -3922,7 +3922,7 @@
 +{
 +    return r == 1 ? 0.5 : r == 0 ? 1.0 : 0.0;
 +}
-+
+ 
 +static double ui_sl_hi(int r)
 +{
 +    return r == 0 ? 16.0 : r == 1 ? 30.0 : r == 7 ? 10.0 : r == 8 ? 120.0 : 100.0;
@@ -13650,8 +13650,60 @@
          default:
              break;
          }
-@@ -3526,15 +16597,11 @@
+@@ -3524,17 +16595,70 @@
+     return 0;
+ }
  
++/* v48b: "file:///home/me/My%20Song.mp3" (what a file manager passes for %U) -> "/home/me/My Song.mp3".
++   Returns a new string (av_free it), or NULL when filename is not a file: URI for this computer (it is then used as it is). */
++static int ui_hexval(int c)
++{
++    if (c >= '0' && c <= '9')
++        return c - '0';
++    if (c >= 'a' && c <= 'f')
++        return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F')
++        return c - 'A' + 10;
++    return -1;
++}
++
++static char *ui_uri_to_path(const char *filename)
++{
++    const char *p = filename;
++    char *out, *o;
++
++    if (av_strncasecmp(p, "file:/", 6))
++        return NULL;                    /* not a file: URI ("file:name" is left to FFmpeg, as before) */
++    p += 5;
++    if (p[0] == '/' && p[1] == '/') {   /* file://host/path: only an empty host or localhost is this computer */
++        p += 2;
++        if (*p != '/') {
++            if (av_strncasecmp(p, "localhost/", 10))
++                return NULL;
++            p += 9;                     /* on the "/" after localhost */
++        }
++    }
++    out = av_malloc(strlen(p) + 1);
++    if (!out)
++        return NULL;
++    for (o = out; *p; p++) {
++        int h, l;
++
++        if (*p == '%' && (h = ui_hexval((unsigned char)p[1])) >= 0 && (l = ui_hexval((unsigned char)p[2])) >= 0) {
++            if (!(h * 16 + l)) {        /* %00 cannot be in a name: leave the whole thing alone */
++                av_free(out);
++                return NULL;
++            }
++            *o++ = (char)(h * 16 + l);
++            p += 2;
++        } else {
++            *o++ = *p;
++        }
++    }
++    *o = 0;
++    return out;
++}
++
  static int opt_input_file(void *optctx, const char *filename)
  {
 -    if (input_filename) {
@@ -13660,16 +13712,23 @@
 -                filename, input_filename);
 -        return AVERROR(EINVAL);
 -    }
++    char *path;
++
      if (!strcmp(filename, "-"))
          filename = "fd:";
 -    input_filename = filename;
-+    queue_add_path(filename);
++    path = ui_uri_to_path(filename);    /* v48b: a file: URI becomes a plain path */
++    if (path)
++        filename = path;
++    queue_add_path(filename);           /* the queue keeps its own copy */
 +    if (!input_filename)
-+        input_filename = filename;      /* used for the window title */
++        input_filename = filename;      /* used for the window title (a decoded path stays allocated for that) */
++    else
++        av_free(path);
  
      return 0;
  }
-@@ -3678,13 +16745,7 @@
+@@ -3678,13 +16802,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -13684,7 +13743,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +16761,21 @@
+@@ -3700,6 +16818,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -13706,7 +13765,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +16793,9 @@
+@@ -3717,10 +16850,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -13718,7 +13777,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +16803,7 @@
+@@ -3728,7 +16860,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -13727,7 +13786,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +16817,103 @@
+@@ -3742,15 +16874,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }
@@ -13745,8 +13804,7 @@
 +
 +    for (;;) {
 +        int next, skip_dir;
- 
--    event_loop(is);
++
 +        if (q_pos >= 0 && q_pos < q_count && q_sleep_item && q_sleep_item == q_items[q_pos]) {
 +            q_sleep_item = NULL;                /* the item the sleep timer waited for is over */
 +            ui_sleep_sel = 0;
@@ -13823,7 +13881,8 @@
 +        }
 +        {
 +            const void *me = is;
-+
+ 
+-    event_loop(is);
 +            event_loop(is);                     /* returns when this item is over */
 +            if (ui_failed_is == me) {           /* v47: it could not be opened: it counts as skipped */
 +                ui_failed_is = NULL;
