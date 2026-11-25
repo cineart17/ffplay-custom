@@ -6,6 +6,13 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v51
+- Thumbnails in the grid view: a picture from the video, the cover of a song, and for a folder a picture of something inside it (Ctrl+T turns them off)
+- The tree opens itself down to the open folder
+- Recent places: the folders something was played or added from
+- Ctrl+L (or a click on the empty part of the path) types a path; Tab finishes a folder name
+- A mounted drive has an eject mark in the tree: a click unmounts it
+
 ## v50
 - Grid view: a button in the top row switches between the list and the grid (Ctrl+1 list, Ctrl+2 grid); it is remembered
 - Drop downs: the left side is a folder tree, every folder opens with its arrow; drives that are not mounted are under Devices and a click mounts them

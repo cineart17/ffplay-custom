@@ -1365,7 +1365,7 @@ static double  ui_round_k(void)
 {
     return av_clipd(cfg_round, 0, 100) / 100.0;
 }
-static int     cfg_pk_grid = 0, cfg_pk_sort = 0, cfg_pk_desc = 0;      /* v50: the picker's view (list or grid) and its order */
+static int     cfg_pk_grid = 0, cfg_pk_sort = 0, cfg_pk_desc = 0, cfg_pk_thumbs = 1;      /* v50: the picker's view (list or grid) and its order */
 static int     cfg_picker = 1;              /* 1 = our own file picker, 0 = the system's dialog (zenity) (v44) */
 static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
@@ -1482,6 +1482,8 @@ static void settings_load(void)
             cfg_pk_sort = av_clip(n, 0, 2);
         else if (sscanf(line, " picker_desc = %d", &n) == 1)
             cfg_pk_desc = (n != 0);
+        else if (sscanf(line, " picker_thumbs = %d", &n) == 1)
+            cfg_pk_thumbs = (n != 0);
         else if (sscanf(line, " crisp_text = %d", &n) == 1)
             cfg_crisp = (n != 0);
         else if (sscanf(line, " glass_tint = %d", &n) == 1)
@@ -1541,7 +1543,7 @@ static void settings_save(void)
     fprintf(f, "# 1 = open in the conventional full screen (the window that fills the screen under the panel; a double tap goes to complete full screen), 0 = open in a normal window\nfullscreen = %d\n\n", cfg_fullscreen);
     fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
     fprintf(f, "# 1 = Open File, Open Folder and Add to Queue use the player's own picker, 0 = the system's dialog (needs zenity)\npicker = %d\n\n", cfg_picker);
-    fprintf(f, "# The file picker: 1 = grid view, 0 = list; sorted by 0 name, 1 modified, 2 size; 1 = the other way round\npicker_grid = %d\npicker_sort = %d\npicker_desc = %d\n\n", cfg_pk_grid, cfg_pk_sort, cfg_pk_desc);
+    fprintf(f, "# The file picker: 1 = grid view, 0 = list; sorted by 0 name, 1 modified, 2 size; 1 = the other way round\npicker_grid = %d\npicker_sort = %d\npicker_desc = %d\n# 1 = the grid view shows pictures from the videos, the covers of songs and a picture from inside each folder, 0 = icons only (Ctrl+T in the picker)\npicker_thumbs = %d\n\n", cfg_pk_grid, cfg_pk_sort, cfg_pk_desc, cfg_pk_thumbs);
     fprintf(f, "# 1 = letters are placed with sub-pixel accuracy (tighter, crisper titles), 0 = the older rendering\ncrisp_text = %d\n\n", cfg_crisp);
     fprintf(f, "# How strong the smoked veil under the glass is (0 to 100), and how round the corners are (0 = square, 100 = as before)\nglass_tint = %d\nroundness = %d\n\n", cfg_tint, cfg_round);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
@@ -3837,7 +3839,7 @@ enum { UI_IC_OPEN, UI_IC_FOLDER, UI_IC_FILE, UI_IC_QUEUE, UI_IC_INFO, UI_IC_GEAR
        UI_IC_FADE, UI_IC_SKIP, UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP, UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE,
        UI_IC_CHEV_R, UI_IC_CHEV_D, UI_IC_CHEV_U, UI_IC_X,
        UI_IC_CHEV_L,
-       UI_IC_GRID, UI_IC_LIST, UI_IC_SEARCH, UI_IC_ARR_L, UI_IC_ARR_R, UI_IC_ARR_U,
+       UI_IC_GRID, UI_IC_LIST, UI_IC_SEARCH, UI_IC_ARR_L, UI_IC_ARR_R, UI_IC_ARR_U, UI_IC_EJECT,
        UI_IC_N };
 #define UI_IC_MAXS 80
 typedef struct { float a, b, c, d, e, f; int arc; } UiStroke;       /* a line (a,b to c,d) or an arc (centre a,b, radius c, angles e to f) */
@@ -3994,6 +3996,12 @@ static void ui_icon_build(int id)
     case UI_IC_ARR_U:
         ic_seg(12, 19, 12, 6.5f);
         ic_arc(12, 12.5f, 7, 230, 310);
+        break;
+    case UI_IC_EJECT:                           /* v51: a triangle over a bar */
+        ic_seg(12, 5.5f, 19, 14.5f);
+        ic_seg(19, 14.5f, 5, 14.5f);
+        ic_seg(5, 14.5f, 12, 5.5f);
+        ic_seg(5.5f, 18.5f, 18.5f, 18.5f);
         break;
     case UI_IC_SEARCH:
         ic_arc(10.5f, 10.5f, 6.5f, 0, 360);
@@ -14083,7 +14091,7 @@ static void ui_pause_tick(VideoState *is)
             The back and forward buttons of a mouse go back and forward.
      Keys:  type to search, Up/Down/PageUp/PageDown/Home/End (and Left/Right in the grid), Enter (opens the row, or adds what is ticked),
             Right enters a folder, Left or Backspace (with nothing typed) goes up, Alt+Left/Right back and forward, Alt+Up up, Space ticks,
-            Ctrl+A ticks all, Ctrl+1 list, Ctrl+2 grid, Ctrl+F search box, Tab shows all files, Ctrl+H shows hidden ones, F5 reads again,
+            Ctrl+A ticks all, Ctrl+1 list, Ctrl+2 grid, Ctrl+F search box, Ctrl+L type a path (Tab finishes a folder name), Ctrl+T thumbnails on or off, Tab shows all files, Ctrl+H shows hidden ones, F5 reads again,
             Esc clears the search, then closes the search box, then closes the picker.
    ================================================================================================================================ */
 #ifndef DT_DIR                                  /* d_type values (Linux), for a C mode that hides the names */
@@ -14100,7 +14108,7 @@ static void ui_pause_tick(VideoState *is)
 #define UI_PK_SBOX  50
 #define UI_PK_HDR   34
 #define UI_PK_TILE_W 136
-#define UI_PK_TILE_H 118
+#define UI_PK_TILE_H 128
 #define UI_PK_TROW  30
 #define UI_PK_MAXX  700
 
@@ -14154,7 +14162,10 @@ static int ui_pk_sortk = 0, ui_pk_desc = 0;     /* sorted by 0 name, 1 modified,
 static char ui_pk_note[200];                    /* what was just done, shown in the foot for a moment */
 static int64_t ui_pk_note_until = 0;
 static int ui_pk_cm_open = 0;                   /* the menu of a row or of Sort (below) */
-static int ui_pk_reveal = 0;                    /* 1 = scroll the cursor into view at the next drawing (the rows have no places yet) */
+static int ui_pk_reveal = 0;
+static int ui_pk_loc_on = 0, ui_pk_loc_fresh = 0;  /* fresh: the path shown has not been touched yet, so typing replaces it */                    /* v51: the path is being typed (Ctrl+L) */
+static char ui_pk_loc[PATH_MAX];
+static int ui_pk_tree_show = -1;                /* v51: the tree node to scroll into view at the next drawing */                    /* 1 = scroll the cursor into view at the next drawing (the rows have no places yet) */
 
 static void ui_pk_close(VideoState *is);
 
@@ -14585,6 +14596,444 @@ static void ui_pk_resort(void)
         ui_pk_sc = 0.0;
 }
 
+/* ----- v51: thumbnails (grid view). A video shows a picture from about a tenth of the way in, a song shows its cover if it has one, and a
+   folder shows a picture of something inside it (the first video, else the first song with a cover; one folder deeper if it has none).
+   A thread does the decoding, one file at a time and only for the tiles that are in view, so scrolling never waits for it. What is made
+   is kept in memory (a few hundred pictures) and is made again when the file or the folder changes. ----- */
+#define UI_PK_TH_W   192
+#define UI_PK_TH_H   108
+#define UI_PK_TH_MAX 360
+#define UI_PK_TQ     48
+
+typedef struct { uint64_t key; int state, w, h; SDL_Texture *tex; int64_t born, used; } UiPkThumb;     /* state 1 asked, 2 ready, 3 nothing to show */
+typedef struct { uint64_t key; int dir; char path[PATH_MAX]; } UiPkTReq;
+typedef struct { uint64_t key; uint8_t *px; int w, h; } UiPkTRes;
+
+static UiPkThumb ui_pk_th[UI_PK_TH_MAX];
+static int ui_pk_nth = 0;
+static UiPkTReq ui_pk_tq[UI_PK_TQ], ui_pk_want[UI_PK_TQ];
+static int ui_pk_tqn = 0, ui_pk_nwant = 0;
+static UiPkTRes ui_pk_tres[32];
+static int ui_pk_tresn = 0, ui_pk_thread_on = 0, ui_pk_th_fading = 0;
+static uint64_t ui_pk_tworking = 0;
+static int64_t ui_pk_frame = 0;
+static SDL_mutex *ui_pk_tmx = NULL;
+static SDL_cond *ui_pk_tcv = NULL;
+
+static uint64_t ui_pk_thumb_key(const UiPkEnt *e, const char *path)
+{
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)path;
+    char tail[64];
+    int i;
+
+    for (; *p; p++)
+        h = (h ^ *p) * 1099511628211ULL;
+    snprintf(tail, sizeof(tail), "|%ld|%ld|%d", (long)e->mtime, e->dir ? 0L : (long)e->size, e->dir);
+    for (i = 0; tail[i]; i++)
+        h = (h ^ (unsigned char)tail[i]) * 1099511628211ULL;
+    return h ? h : 1;
+}
+
+static int ui_pk_intr_cb(void *p)
+{
+    return av_gettime_relative() > *(int64_t *)p;
+}
+
+/* A picture from a file: BGRA pixels in a box of at most UI_PK_TH_W x UI_PK_TH_H. Returns 1 if there is one. */
+static int ui_pk_thumb_decode(const char *path, uint8_t **out, int *ow, int *oh)
+{
+    AVFormatContext *fc = avformat_alloc_context();
+    AVCodecContext *cc = NULL;
+    AVFrame *fr = NULL, *dst = NULL;
+    AVPacket *pk = NULL;
+    AVDictionary *opts = NULL;
+    const AVCodec *dec = NULL;
+    struct SwsContext *sws = NULL;
+    int64_t deadline = av_gettime_relative() + 4000000;
+    int vi, ok = 0, tw, th, i, got = 0;
+    uint8_t *px = NULL;
+
+    if (!fc)
+        return 0;
+    fc->interrupt_callback.callback = ui_pk_intr_cb;
+    fc->interrupt_callback.opaque = &deadline;
+    av_dict_set(&opts, "analyzeduration", "1500000", 0);
+    av_dict_set(&opts, "probesize", "3000000", 0);
+    if (avformat_open_input(&fc, path, NULL, &opts) < 0) {
+        av_dict_free(&opts);
+        return 0;                               /* avformat_open_input freed fc */
+    }
+    av_dict_free(&opts);
+    if (avformat_find_stream_info(fc, NULL) < 0)
+        goto end;
+    vi = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, &dec, 0);
+    if (vi < 0 || !dec)
+        goto end;
+    if (!(cc = avcodec_alloc_context3(dec)) || avcodec_parameters_to_context(cc, fc->streams[vi]->codecpar) < 0)
+        goto end;
+    cc->thread_count = 1;
+    cc->skip_loop_filter = AVDISCARD_NONREF;
+    if (avcodec_open2(cc, dec, NULL) < 0)
+        goto end;
+    fr = av_frame_alloc();
+    pk = av_packet_alloc();
+    if (!fr || !pk)
+        goto end;
+    if (fc->streams[vi]->disposition & AV_DISPOSITION_ATTACHED_PIC) {       /* the cover of a song */
+        if (avcodec_send_packet(cc, &fc->streams[vi]->attached_pic) >= 0) {
+            avcodec_send_packet(cc, NULL);
+            got = avcodec_receive_frame(cc, fr) >= 0;
+        }
+    } else {
+        int64_t dur = fc->duration > 0 ? fc->duration : 0, target = 0;
+
+        if (dur > 20 * AV_TIME_BASE)
+            target = dur / 10;
+        else if (dur > 4 * AV_TIME_BASE)
+            target = dur / 3;
+        if (target > 0) {
+            if (fc->start_time != AV_NOPTS_VALUE)
+                target += fc->start_time;
+            if (av_seek_frame(fc, -1, target, AVSEEK_FLAG_BACKWARD) >= 0)
+                avcodec_flush_buffers(cc);
+        }
+        for (i = 0; i < 400 && !got && av_gettime_relative() < deadline; i++) {
+            int r = av_read_frame(fc, pk);
+
+            if (r < 0)
+                break;
+            if (pk->stream_index == vi && avcodec_send_packet(cc, pk) >= 0)
+                got = avcodec_receive_frame(cc, fr) >= 0;
+            av_packet_unref(pk);
+        }
+    }
+    if (!got || fr->width <= 0 || fr->height <= 0)
+        goto end;
+    tw = UI_PK_TH_W;
+    th = (int)((int64_t)fr->height * tw / fr->width);
+    if (th > UI_PK_TH_H) {
+        th = UI_PK_TH_H;
+        tw = (int)((int64_t)fr->width * th / fr->height);
+    }
+    tw = FFMAX(tw & ~1, 2);
+    th = FFMAX(th & ~1, 2);
+    {
+        enum AVPixelFormat sf = fr->format;
+        int full = 0;
+
+        if (sf == AV_PIX_FMT_YUVJ420P) {                /* the "J" formats are the same pictures with full range */
+            sf = AV_PIX_FMT_YUV420P;
+            full = 1;
+        } else if (sf == AV_PIX_FMT_YUVJ422P) {
+            sf = AV_PIX_FMT_YUV422P;
+            full = 1;
+        } else if (sf == AV_PIX_FMT_YUVJ444P) {
+            sf = AV_PIX_FMT_YUV444P;
+            full = 1;
+        } else if (sf == AV_PIX_FMT_YUVJ440P) {
+            sf = AV_PIX_FMT_YUV440P;
+            full = 1;
+        }
+        sws = sws_getContext(fr->width, fr->height, sf, tw, th, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
+        if (!sws)
+            goto end;
+        sws_setColorspaceDetails(sws, sws_getCoefficients(SWS_CS_DEFAULT), full, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+    }
+    px = malloc((size_t)tw * th * 4);
+    dst = av_frame_alloc();
+    if (!px || !dst)
+        goto end;
+    {
+        uint8_t *data[4] = { px, NULL, NULL, NULL };
+        int ls[4] = { tw * 4, 0, 0, 0 };
+
+        sws_scale(sws, (const uint8_t * const *)fr->data, fr->linesize, 0, fr->height, data, ls);
+    }
+    *out = px;
+    px = NULL;
+    *ow = tw;
+    *oh = th;
+    ok = 1;
+end:
+    free(px);
+    av_frame_free(&dst);
+    sws_freeContext(sws);
+    av_packet_free(&pk);
+    av_frame_free(&fr);
+    avcodec_free_context(&cc);
+    avformat_close_input(&fc);
+    return ok;
+}
+
+static int ui_pk_thumb_namecmp(const void *a, const void *b)
+{
+    return av_strcasecmp(*(char * const *)a, *(char * const *)b);
+}
+
+/* A picture for a folder: the first video in it, else the first song that has a cover, else the same one folder down */
+static int ui_pk_thumb_folder(const char *dir, int depth, int *tries, uint8_t **out, int *ow, int *oh)
+{
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    char **vid = NULL, **aud = NULL, **sub = NULL, full[PATH_MAX + 300];
+    int nv = 0, na = 0, ns = 0, i, ok = 0, seen = 0;
+
+    if (!d)
+        return 0;
+    vid = calloc(400, sizeof(*vid));
+    aud = calloc(400, sizeof(*aud));
+    sub = calloc(400, sizeof(*sub));
+    while (vid && aud && sub && (de = readdir(d)) && seen++ < 3000) {
+        struct stat st;
+
+        if (de->d_name[0] == '.')
+            continue;
+        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+        if (stat(full, &st) != 0)
+            continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (ns < 400)
+                sub[ns++] = strdup(de->d_name);
+        } else if (S_ISREG(st.st_mode) && st.st_size > 0) {
+            const char *dot = strrchr(de->d_name, '.');
+            int k;
+
+            if (!dot)
+                continue;
+            for (k = 0; ui_tv_ext[1][k]; k++)
+                if (!av_strcasecmp(dot + 1, ui_tv_ext[1][k]) && nv < 400)
+                    vid[nv++] = strdup(de->d_name);
+            for (k = 0; ui_tv_ext[0][k]; k++)
+                if (!av_strcasecmp(dot + 1, ui_tv_ext[0][k]) && na < 400)
+                    aud[na++] = strdup(de->d_name);
+        }
+    }
+    closedir(d);
+    if (nv > 1)
+        qsort(vid, nv, sizeof(*vid), ui_pk_thumb_namecmp);
+    if (na > 1)
+        qsort(aud, na, sizeof(*aud), ui_pk_thumb_namecmp);
+    if (ns > 1)
+        qsort(sub, ns, sizeof(*sub), ui_pk_thumb_namecmp);
+    for (i = 0; i < nv && !ok && *tries < 6; i++, (*tries)++) {
+        snprintf(full, sizeof(full), "%s/%s", dir, vid[i]);
+        ok = ui_pk_thumb_decode(full, out, ow, oh);
+    }
+    for (i = 0; i < na && !ok && *tries < 6; i++, (*tries)++) {
+        snprintf(full, sizeof(full), "%s/%s", dir, aud[i]);
+        ok = ui_pk_thumb_decode(full, out, ow, oh);
+    }
+    for (i = 0; i < ns && !ok && depth < 2 && *tries < 6; i++) {
+        snprintf(full, sizeof(full), "%s/%s", dir, sub[i]);
+        ok = ui_pk_thumb_folder(full, depth + 1, tries, out, ow, oh);
+    }
+    for (i = 0; i < nv; i++)
+        free(vid[i]);
+    for (i = 0; i < na; i++)
+        free(aud[i]);
+    for (i = 0; i < ns; i++)
+        free(sub[i]);
+    free(vid);
+    free(aud);
+    free(sub);
+    return ok;
+}
+
+static int ui_pk_thumb_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        UiPkTReq rq;
+        uint8_t *px = NULL;
+        int w = 0, h = 0, ok;
+
+        SDL_LockMutex(ui_pk_tmx);
+        while (ui_pk_tqn == 0)
+            SDL_CondWait(ui_pk_tcv, ui_pk_tmx);
+        rq = ui_pk_tq[0];
+        memmove(&ui_pk_tq[0], &ui_pk_tq[1], (ui_pk_tqn - 1) * sizeof(ui_pk_tq[0]));
+        ui_pk_tqn--;
+        ui_pk_tworking = rq.key;
+        SDL_UnlockMutex(ui_pk_tmx);
+        if (rq.dir) {
+            int tries = 0;
+
+            ok = ui_pk_thumb_folder(rq.path, 0, &tries, &px, &w, &h);
+        } else {
+            ok = ui_pk_thumb_decode(rq.path, &px, &w, &h);
+        }
+        SDL_LockMutex(ui_pk_tmx);
+        if (ui_pk_tresn < 32) {
+            ui_pk_tres[ui_pk_tresn].key = rq.key;
+            ui_pk_tres[ui_pk_tresn].px = ok ? px : NULL;
+            ui_pk_tres[ui_pk_tresn].w = w;
+            ui_pk_tres[ui_pk_tresn].h = h;
+            ui_pk_tresn++;
+        } else {
+            free(px);                           /* the main loop is behind: this one is asked for again */
+        }
+        ui_pk_tworking = 0;
+        SDL_UnlockMutex(ui_pk_tmx);
+    }
+    return 0;
+}
+
+static UiPkThumb *ui_pk_th_find(uint64_t key)
+{
+    int i;
+
+    for (i = 0; i < ui_pk_nth; i++)
+        if (ui_pk_th[i].key == key)
+            return &ui_pk_th[i];
+    return NULL;
+}
+
+static UiPkThumb *ui_pk_th_add(uint64_t key)
+{
+    UiPkThumb *t;
+    int i, old = 0;
+
+    if (ui_pk_nth < UI_PK_TH_MAX) {
+        t = &ui_pk_th[ui_pk_nth++];
+    } else {                                    /* full: the one that was shown longest ago goes */
+        for (i = 1; i < ui_pk_nth; i++)
+            if (ui_pk_th[i].used < ui_pk_th[old].used)
+                old = i;
+        t = &ui_pk_th[old];
+        if (t->tex)
+            SDL_DestroyTexture(t->tex);
+    }
+    memset(t, 0, sizeof(*t));
+    t->key = key;
+    t->state = 1;
+    t->used = ui_pk_frame;
+    return t;
+}
+
+static void ui_pk_thumb_begin(void)
+{
+    ui_pk_nwant = 0;
+    ui_pk_th_fading = 0;
+    ui_pk_frame++;
+}
+
+/* What the tiles in view are waiting for goes to the thread, in place of what it was told last time */
+static void ui_pk_thumb_flush(void)
+{
+    int i, n = 0;
+
+    if (!ui_pk_tmx) {
+        if (!ui_pk_nwant)
+            return;
+        ui_pk_tmx = SDL_CreateMutex();
+        ui_pk_tcv = SDL_CreateCond();
+    }
+    if (!ui_pk_thread_on && ui_pk_nwant) {
+        SDL_Thread *t = SDL_CreateThread(ui_pk_thumb_thread, "pk-thumbs", NULL);
+
+        if (t) {
+            SDL_DetachThread(t);
+            ui_pk_thread_on = 1;
+        }
+    }
+    SDL_LockMutex(ui_pk_tmx);
+    for (i = 0; i < ui_pk_nwant && n < UI_PK_TQ; i++)
+        if (ui_pk_want[i].key != ui_pk_tworking)
+            ui_pk_tq[n++] = ui_pk_want[i];
+    ui_pk_tqn = n;
+    if (n)
+        SDL_CondSignal(ui_pk_tcv);
+    SDL_UnlockMutex(ui_pk_tmx);
+}
+
+/* Finished pictures become textures (done here: only this thread may use the renderer) */
+static int ui_pk_thumb_tick(void)
+{
+    UiPkTRes res[32];
+    int n, i, got = 0;
+
+    if (!ui_pk_tmx)
+        return 0;
+    SDL_LockMutex(ui_pk_tmx);
+    n = ui_pk_tresn;
+    memcpy(res, ui_pk_tres, n * sizeof(res[0]));
+    ui_pk_tresn = 0;
+    SDL_UnlockMutex(ui_pk_tmx);
+    for (i = 0; i < n; i++) {
+        UiPkThumb *t = ui_pk_th_find(res[i].key);
+
+        if (!t) {
+            free(res[i].px);
+            continue;
+        }
+        got = 1;
+        if (res[i].px) {
+            t->tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, res[i].w, res[i].h);
+            if (t->tex) {
+                SDL_UpdateTexture(t->tex, NULL, res[i].px, res[i].w * 4);
+                SDL_SetTextureBlendMode(t->tex, SDL_BLENDMODE_BLEND);
+                t->w = res[i].w;
+                t->h = res[i].h;
+                t->state = 2;
+                t->born = av_gettime_relative();
+            } else {
+                t->state = 3;
+            }
+        } else {
+            t->state = 3;                       /* nothing to show: the icon stays */
+        }
+        free(res[i].px);
+    }
+    return got;
+}
+
+/* The picture of an entry inside a box, if there is one (the thread is asked for it if not). Returns 1 if it was drawn. */
+static int ui_pk_thumb_draw(const UiPkEnt *e, const SDL_Rect *box)
+{
+    char path[PATH_MAX + 300];
+    uint64_t key;
+    UiPkThumb *t;
+    SDL_Rect dst;
+    int64_t age;
+
+    if (!cfg_pk_thumbs || (!e->dir && e->size <= 0))
+        return 0;                               /* an empty file has no picture */
+    ui_pk_path_of(e, path, sizeof(path));
+    key = ui_pk_thumb_key(e, path);
+    t = ui_pk_th_find(key);
+    if (!t)
+        t = ui_pk_th_add(key);
+    if (!t)
+        return 0;
+    t->used = ui_pk_frame;
+    if (t->state == 1) {
+        if (ui_pk_nwant < UI_PK_TQ) {
+            ui_pk_want[ui_pk_nwant].key = key;
+            ui_pk_want[ui_pk_nwant].dir = e->dir;
+            snprintf(ui_pk_want[ui_pk_nwant].path, sizeof(ui_pk_want[0].path), "%s", path);
+            ui_pk_nwant++;
+        }
+        return 0;
+    }
+    if (t->state != 2 || !t->tex)
+        return 0;
+    dst.h = box->h;
+    dst.w = t->w * box->h / t->h;
+    if (dst.w > box->w) {
+        dst.w = box->w;
+        dst.h = t->h * box->w / t->w;
+    }
+    dst.x = box->x + (box->w - dst.w) / 2;
+    dst.y = box->y + (box->h - dst.h) / 2;
+    age = av_gettime_relative() - t->born;
+    SDL_SetTextureAlphaMod(t->tex, age < 220000 ? (Uint8)(255 * age / 220000) : 255);
+    if (age < 220000)
+        ui_pk_th_fading = 1;
+    SDL_RenderCopy(renderer, t->tex, NULL, &dst);
+    return 1;
+}
+
 static UiPkDev ui_pk_dev[24];                   /* v49: drives and partitions (see the drives section below) */
 static int ui_pk_ndev = 0;
 
@@ -14623,6 +15072,7 @@ static void ui_pk_hist_push(void)               /* the open folder becomes the n
 
 static void ui_pk_jq_clear(void);
 static void ui_pk_search_start(void);
+static void ui_pk_tree_reveal(void);
 
 /* Read a folder. Returns 0 if it cannot be read (nothing changes then). */
 static int ui_pk_load(const char *dir)
@@ -14678,6 +15128,7 @@ static int ui_pk_load(const char *dir)
     ui_pk_sc = 0.0;
     ui_pk_goal = -1.0;
     ui_pk_rebuild();
+    ui_pk_tree_reveal();                        /* v51: the tree opens down to this folder */
     return 1;
 }
 
@@ -15094,14 +15545,25 @@ static int ui_pk_dev_thread(void *arg)
     return 0;
 }
 
+static int ui_pk_mnt_op = 0;                    /* what the thread was asked to do: 0 mount, 1 unmount (for the message) */
+
+/* arg: "m|/dev/sdb1" to mount, "u|/dev/sdb1|/media/me/DISK" to unmount */
 static int ui_pk_mnt_thread(void *arg)
 {
-    char *dev = arg, cmd[160], line[512], msg[240] = "", mp[PATH_MAX] = "";
+    char *spec = arg, *dev = spec + 2, *mnt, cmd[700], line[512], msg[240] = "", mp[PATH_MAX] = "";
     FILE *f;
-    int ok = 0, tries;
+    int ok = 0, tries, un = spec[0] == 'u';
 
+    mnt = strchr(dev, '|');
+    if (mnt)
+        *mnt++ = 0;
     for (tries = 0; tries < 2 && !ok; tries++) {
-        snprintf(cmd, sizeof(cmd), tries ? "gio mount -d '%s' 2>&1" : "udisksctl mount -b '%s' 2>&1", dev);
+        if (un && tries && (!mnt || !mnt[0] || strchr(mnt, '\'')))
+            break;                              /* nothing else to try */
+        if (un)
+            snprintf(cmd, sizeof(cmd), tries ? "gio mount -u '%s' 2>&1" : "udisksctl unmount -b '%s' 2>&1", tries ? mnt : dev);
+        else
+            snprintf(cmd, sizeof(cmd), tries ? "gio mount -d '%s' 2>&1" : "udisksctl mount -b '%s' 2>&1", dev);
         if (!(f = popen(cmd, "r")))
             continue;
         while (fgets(line, sizeof(line), f)) {
@@ -15110,24 +15572,24 @@ static int ui_pk_mnt_thread(void *arg)
                 snprintf(msg, sizeof(msg), "%.230s", line);
         }
         pclose(f);
+        mp[0] = 0;
         snprintf(cmd, sizeof(cmd), "lsblk -no MOUNTPOINT '%s' 2>/dev/null", dev);
         if ((f = popen(cmd, "r"))) {
-            if (fgets(mp, sizeof(mp), f)) {
+            if (fgets(mp, sizeof(mp), f))
                 mp[strcspn(mp, "\n")] = 0;
-                ok = mp[0] != 0;
-            }
             pclose(f);
         }
+        ok = un ? !mp[0] : mp[0] != 0;
     }
     if (ok) {
-        snprintf(ui_pk_mnt_path, sizeof(ui_pk_mnt_path), "%s", mp);
+        snprintf(ui_pk_mnt_path, sizeof(ui_pk_mnt_path), "%s", un ? "" : mp);
     } else {
-        const char *m = strstr(msg, "Error mounting");
+        const char *m = strstr(msg, "Error ");
         const char *c = m ? strchr(m, ':') : NULL;
 
-        snprintf(ui_pk_mnt_msg, sizeof(ui_pk_mnt_msg), "%s", c ? c + 2 : msg[0] ? msg : "it could not be mounted");
+        snprintf(ui_pk_mnt_msg, sizeof(ui_pk_mnt_msg), "%.230s", c && c[1] ? c + 2 : msg[0] ? msg : un ? "it is in use" : "it could not be mounted");
     }
-    free(dev);
+    free(spec);
     SDL_AtomicSet(&ui_pk_mnt_state, ok ? 2 : 3);
     return 0;
 }
@@ -15146,24 +15608,38 @@ static void ui_pk_dev_start(void)
         SDL_AtomicSet(&ui_pk_dev_state, 0);
 }
 
-static void ui_pk_mount(const UiPkDev *dv)
+static void ui_pk_mnt_run(const UiPkDev *dv, int un)
 {
     SDL_Thread *t;
-    char *copy;
+    char *spec;
 
     if (SDL_AtomicGet(&ui_pk_mnt_state) == 1 || !dv->dev[0] || !ui_pk_devname_ok(dv->dev))
         return;
+    if (un && ui_pk_under(ui_pk_dir, dv->mnt)) {        /* do not unmount the folder that is open: leave it first */
+        const char *home = getenv("HOME");
+
+        ui_pk_go(home && home[0] ? home : "/");
+    }
     snprintf(ui_pk_mnt_name, sizeof(ui_pk_mnt_name), "%s", dv->label);
-    snprintf(ui_pk_note, sizeof(ui_pk_note), "Mounting %.100s ...", dv->label);
+    snprintf(ui_pk_note, sizeof(ui_pk_note), "%s %.100s ...", un ? "Unmounting" : "Mounting", dv->label);
     ui_pk_note_until = av_gettime_relative() + 60000000;
-    copy = strdup(dv->dev);
+    ui_pk_mnt_op = un;
+    spec = malloc(strlen(dv->dev) + strlen(dv->mnt) + 8);
+    if (!spec)
+        return;
+    sprintf(spec, "%c|%s|%s", un ? 'u' : 'm', dv->dev, dv->mnt);
     SDL_AtomicSet(&ui_pk_mnt_state, 1);
-    if ((t = SDL_CreateThread(ui_pk_mnt_thread, "pk-mount", copy))) {
+    if ((t = SDL_CreateThread(ui_pk_mnt_thread, "pk-mount", spec))) {
         SDL_DetachThread(t);
     } else {
-        free(copy);
+        free(spec);
         SDL_AtomicSet(&ui_pk_mnt_state, 0);
     }
+}
+
+static void ui_pk_mount(const UiPkDev *dv)
+{
+    ui_pk_mnt_run(dv, 0);
 }
 
 /* ----- v49: the folder tree on the left. Every folder has a drop down; it is read when it is opened. ----- */
@@ -15309,6 +15785,9 @@ static void ui_pk_tree_devs(void)
     }
 }
 
+static void ui_pk_rec_load(void);
+static void ui_pk_tree_recents(void);
+
 static void ui_pk_tree_build(void)
 {
     static const char * const names[] = { "Home", "Desktop", "Documents", "Downloads", "Music", "Videos", "Pictures" };
@@ -15328,7 +15807,146 @@ static void ui_pk_tree_build(void)
             ui_pk_tn_insert(ui_pk_ntn, names[i], realpath(base, real) ? real : base, NULL, 0, 0, 0);
     }
     ui_pk_tn_insert(ui_pk_ntn, "Computer", "/", NULL, 0, 0, 0);
+    ui_pk_rec_load();
+    ui_pk_tree_recents();
     ui_pk_tree_devs();
+}
+
+
+/* ----- v51: recent places: the folders something was played or added from, newest first (kept in recent_places.txt) ----- */
+#define UI_PK_NREC 6
+static char *ui_pk_rec[UI_PK_NREC];
+static int ui_pk_nrec = 0, ui_pk_rec_loaded = 0;
+
+static int ui_pk_rec_file(char *out, size_t size)
+{
+    const char *home = getenv("HOME");
+
+    if (!home || !home[0])
+        return 0;
+    snprintf(out, size, "%s/.config/ffplay-custom/recent_places.txt", home);
+    return 1;
+}
+
+static void ui_pk_rec_load(void)
+{
+    char path[PATH_MAX + 64], line[PATH_MAX + 8];
+    FILE *f;
+
+    if (ui_pk_rec_loaded)
+        return;
+    ui_pk_rec_loaded = 1;
+    if (!ui_pk_rec_file(path, sizeof(path)) || !(f = fopen(path, "r")))
+        return;
+    while (ui_pk_nrec < UI_PK_NREC && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (line[0] == '/')
+            ui_pk_rec[ui_pk_nrec++] = strdup(line);
+    }
+    fclose(f);
+}
+
+static void ui_pk_rec_save(void)
+{
+    char path[PATH_MAX + 64];
+    FILE *f;
+    int i;
+
+    if (!ui_pk_rec_file(path, sizeof(path)) || !(f = fopen(path, "w")))
+        return;
+    for (i = 0; i < ui_pk_nrec; i++)
+        fprintf(f, "%s\n", ui_pk_rec[i]);
+    fclose(f);
+}
+
+static void ui_pk_rec_add(const char *dir)
+{
+    int i, at = ui_pk_nrec;
+
+    ui_pk_rec_load();
+    for (i = 0; i < ui_pk_nrec; i++)
+        if (!strcmp(ui_pk_rec[i], dir)) {
+            at = i;
+            break;
+        }
+    if (at == ui_pk_nrec) {
+        if (ui_pk_nrec < UI_PK_NREC)
+            ui_pk_nrec++;
+        else
+            free(ui_pk_rec[UI_PK_NREC - 1]);
+        at = ui_pk_nrec - 1;
+        ui_pk_rec[at] = strdup(dir);
+    }
+    for (i = at; i > 0; i--) {                  /* to the front */
+        char *t = ui_pk_rec[i];
+
+        ui_pk_rec[i] = ui_pk_rec[i - 1];
+        ui_pk_rec[i - 1] = t;
+    }
+    ui_pk_rec_save();
+    ui_pk_tree_recents();
+}
+
+/* The Recent part of the tree, made again (between the places and the drives) */
+static void ui_pk_tree_recents(void)
+{
+    int i, at;
+
+    for (i = ui_pk_ntn - 1; i >= 0; i--)
+        if (ui_pk_tn[i].grp == 2) {
+            ui_pk_tn_free(&ui_pk_tn[i]);
+            memmove(&ui_pk_tn[i], &ui_pk_tn[i + 1], (ui_pk_ntn - i - 1) * sizeof(*ui_pk_tn));
+            ui_pk_ntn--;
+        }
+    for (at = 0; at < ui_pk_ntn && ui_pk_tn[at].grp != 1; at++)
+        ;
+    if (ui_pk_nrec > 0 && ui_pk_tn_insert(at, "Recent", "", NULL, 0, 2, 2))
+        at++;
+    for (i = 0; i < ui_pk_nrec; i++) {
+        struct stat st;
+        const char *base = strrchr(ui_pk_rec[i], '/');
+
+        if (stat(ui_pk_rec[i], &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;                           /* gone */
+        if (ui_pk_tn_insert(at, base && base[1] ? base + 1 : ui_pk_rec[i], ui_pk_rec[i], NULL, 0, 0, 2))
+            at++;
+    }
+}
+
+/* The tree opens down to the open folder and scrolls to it */
+static void ui_pk_tree_reveal(void)
+{
+    int i, best = -1, cur, guard = 0;
+    size_t bl = 0;
+
+    for (i = 0; i < ui_pk_ntn; i++) {
+        UiPkNode *n = &ui_pk_tn[i];
+
+        if (n->depth == 0 && n->kind == 0 && n->grp != 2 && n->path[0] && ui_pk_under(ui_pk_dir, n->path) && strlen(n->path) >= bl) {
+            best = i;
+            bl = strlen(n->path);
+        }
+    }
+    if (best < 0)
+        return;
+    cur = best;
+    while (strcmp(ui_pk_tn[cur].path, ui_pk_dir) && guard++ < 40) {
+        int j, found = -1;
+
+        if (!ui_pk_tn[cur].open)
+            ui_pk_tree_open(cur);
+        if (!ui_pk_tn[cur].open)
+            break;
+        for (j = cur + 1; j < ui_pk_ntn && ui_pk_tn[j].depth > ui_pk_tn[cur].depth; j++)
+            if (ui_pk_tn[j].depth == ui_pk_tn[cur].depth + 1 && ui_pk_under(ui_pk_dir, ui_pk_tn[j].path)) {
+                found = j;
+                break;
+            }
+        if (found < 0)
+            break;
+        cur = found;
+    }
+    ui_pk_tree_show = cur;
 }
 
 /* Work that waits for the main loop: a new list of drives, a drive that has been mounted, and the search */
@@ -15353,17 +15971,22 @@ static void ui_pk_scan_tick(VideoState *is)
     st = SDL_AtomicGet(&ui_pk_mnt_state);
     if (st >= 2) {
         SDL_AtomicSet(&ui_pk_mnt_state, 0);
-        if (st == 2) {
+        if (st == 2 && !ui_pk_mnt_op) {
             ui_pk_go(ui_pk_mnt_path);
             snprintf(ui_pk_note, sizeof(ui_pk_note), "%.80s is mounted", ui_pk_mnt_name);
-            ui_pk_dev_next = 0;                 /* read the list of drives again now */
+        } else if (st == 2) {
+            snprintf(ui_pk_note, sizeof(ui_pk_note), "%.80s can be unplugged now", ui_pk_mnt_name);
         } else {
-            snprintf(ui_pk_note, sizeof(ui_pk_note), "Could not mount %.60s: %.100s", ui_pk_mnt_name, ui_pk_mnt_msg);
+            snprintf(ui_pk_note, sizeof(ui_pk_note), "Could not %s %.60s: %.100s", ui_pk_mnt_op ? "unmount" : "mount", ui_pk_mnt_name, ui_pk_mnt_msg);
         }
+        if (st == 2)
+            ui_pk_dev_next = 0;                 /* read the list of drives again now */
         ui_pk_note_until = av_gettime_relative() + 6000000;
         if (is)
             is->force_refresh = 1;
     }
+    if (ui_pk_thumb_tick() && is)
+        is->force_refresh = 1;
     if (ui_pk_scan_on) {
         ui_pk_search_tick();
         if (is)
@@ -15375,7 +15998,7 @@ static void ui_pk_scan_tick(VideoState *is)
 static int ui_pk_busy(void)
 {
     return ui_pk_open && (ui_pk_scan_on || ui_pk_goal >= 0.0 || SDL_AtomicGet(&ui_pk_mnt_state) == 1 || av_gettime_relative() < ui_pk_note_until ||
-                          ui_pk_reveal);
+                          ui_pk_reveal || ui_pk_th_fading);
 }
 
 static const char *ui_pk_title(void)
@@ -15480,8 +16103,18 @@ static int ui_pk_ticked(int64_t *bytes)
 
 static void ui_pk_send(VideoState *is, char what, const char *path)
 {
+    struct stat st;
+
     (void)is;
     ui_inbox_send(what, path);
+    if ((what == 'o' || what == 'a') && stat(path, &st) == 0) {         /* v51: the folder it came from is a recent place */
+        char dir[PATH_MAX + 300], *slash;
+
+        snprintf(dir, sizeof(dir), "%s", path);
+        if (!S_ISDIR(st.st_mode) && (slash = strrchr(dir, '/')))
+            slash[slash == dir ? 1 : 0] = 0;
+        ui_pk_rec_add(dir);
+    }
 }
 
 static void ui_pk_enter(const UiPkEnt *e)       /* go into a folder */
@@ -15857,9 +16490,26 @@ static void ui_pk_draw(void)
     ui_pk_ibtn(&L.upb, UI_IC_ARR_U, ui_pk_hbtn == 22, 0, strcmp(ui_pk_dir, "/") ? 255 : 90);
     if (L.title_on)
         ui_label(L.upb.x + L.upb.w + 18, L.top.y + UI_PK_TOP / 2, ui_pk_title(), 20, 245, 245, 245, 255);
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 16);                    /* the path sits in a soft pill, like the path bar of Files */
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, ui_pk_loc_on ? 34 : 16);                    /* the path sits in a soft pill, like the path bar of Files */
     ui_pill(&L.crumbs);
-    {
+    ui_pk_ncrumb = 0;
+    if (ui_pk_loc_on) {                         /* v51: Ctrl+L: the path is typed */
+        const char *s = ui_pk_loc;
+        int avail = L.crumbs.w - 40, tw;
+
+        while (*s && ui_text_width(s, 16) > avail) {
+            s++;
+            while ((*s & 0xC0) == 0x80)
+                s++;
+        }
+        tw = ui_text_width(s, 16);
+        ui_label(L.crumbs.x + 18, L.crumbs.y + L.crumbs.h / 2, s, 16, 245, 245, 245, 255);
+        if ((av_gettime_relative() / 500000) % 2 == 0) {
+            SDL_SetRenderDrawColor(renderer, 245, 245, 245, 220);
+            SDL_RenderDrawLine(renderer, L.crumbs.x + 20 + tw, L.crumbs.y + 7, L.crumbs.x + 20 + tw, L.crumbs.y + L.crumbs.h - 7);
+        }
+    } else {
+
         const char *home = getenv("HOME");
         int hl = home ? (int)strlen(home) : 0, starts_home = hl > 1 && !strncmp(ui_pk_dir, home, hl) &&
                  (ui_pk_dir[hl] == '/' || !ui_pk_dir[hl]);
@@ -15897,7 +16547,6 @@ static void ui_pk_draw(void)
             total -= ui_text_width(seg[from].label, 16) + gap;
         x = L.crumbs.x + 16;
         cy = L.crumbs.y + L.crumbs.h / 2;
-        ui_pk_ncrumb = 0;
         if (from > 0) {
             ui_label(x, cy, "...", 16, 170, 170, 170, 255);
             x += ui_text_width("...", 16) + gap;
@@ -15943,6 +16592,15 @@ static void ui_pk_draw(void)
     if (L.side_on) {
         double smax = FFMAX(0.0, ui_pk_ntn * (double)UI_PK_TROW + 12 - L.side.h);
 
+        if (ui_pk_tree_show >= 0) {             /* v51: scroll to a node the tree opened down to */
+            double ty = ui_pk_tree_show * (double)UI_PK_TROW;
+
+            if (ty < ui_pk_ssc)
+                ui_pk_ssc = ty;
+            else if (ty + UI_PK_TROW + 12 > ui_pk_ssc + L.side.h)
+                ui_pk_ssc = ty + UI_PK_TROW + 12 - L.side.h;
+            ui_pk_tree_show = -1;
+        }
         ui_pk_ssc = av_clipd(ui_pk_ssc, 0.0, smax);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 55);
         SDL_RenderFillRect(renderer, &L.side);
@@ -15972,8 +16630,10 @@ static void ui_pk_draw(void)
                 ui_icon(nd->open ? UI_IC_CHEV_D : UI_IC_CHEV_R, ix, ry + UI_PK_TROW / 2, 14, 200, 200, 200, 255);
             ui_icon(UI_IC_FOLDER, ix + 18, ry + UI_PK_TROW / 2, 16, 245, 245, 245, mounted ? (on ? 255 : 210) : 120);
             snprintf(tmp, sizeof(tmp), "%s", nd->name);
-            ui_fit_text(tmp, 15, L.side.w - (ix - L.side.x) - 18 - 34 - (nd->kind == 1 ? 50 : 0));
+            ui_fit_text(tmp, 15, L.side.w - (ix - L.side.x) - 18 - 34 - (nd->kind == 1 ? 50 : 0) - (nd->grp == 1 && nd->dev && nd->kind == 0 && nd->depth == 0 ? 30 : 0));
             ui_label(ix + 40, ry + UI_PK_TROW / 2, tmp, 15, 245, 245, 245, mounted ? (on ? 255 : 220) : 150);
+            if (nd->grp == 1 && nd->dev && nd->kind == 0 && nd->depth == 0)         /* v51: a mounted drive can be unmounted */
+                ui_icon(UI_IC_EJECT, L.side.x + L.side.w - 32, ry + UI_PK_TROW / 2, 16, 245, 245, 245, i == ui_pk_hnode ? 255 : 110);
             if (nd->kind == 1)
                 ui_label(L.side.x + L.side.w - 14 - ui_text_width("Mount", 12), ry + UI_PK_TROW / 2, "Mount", 12, 170, 170, 170,
                          i == ui_pk_hnode ? 255 : 150);
@@ -16011,6 +16671,7 @@ static void ui_pk_draw(void)
     cols_mod = L.list.w >= 640 && !ui_pk_filter[0];
     cols_loc = L.list.w >= 560 && ui_pk_filter[0];
     cbud = av_gettime_relative() + 3000;
+    ui_pk_thumb_begin();
     for (i = ui_pk_first_vis(); i < ui_pk_nrw; i++) {
         UiPkRow *w = &ui_pk_rw[i];
         const UiPkEnt *e;
@@ -16040,7 +16701,8 @@ static void ui_pk_draw(void)
         }
         if (ui_pk_grid) {                       /* a tile: the icon, the name, and how many items or how big */
             SDL_Rect t = { sx + 4, sy + 4, w->r.w - 8, UI_PK_TILE_H - 8 };
-            int rr = (int)(14 * ui_round_k());
+            SDL_Rect box = { t.x + (t.w - 112) / 2, t.y + 8, 112, 63 };
+            int rr = (int)(14 * ui_round_k()), has;
 
             if (i == ui_pk_cur && ui_pk_touched) {
                 SDL_SetRenderDrawColor(renderer, ar, ag, ab, 85);
@@ -16049,10 +16711,19 @@ static void ui_pk_draw(void)
                 SDL_SetRenderDrawColor(renderer, 255, 255, 255, i == ui_pk_hrow ? 30 : 16);
                 ui_rr_fill(&t, rr);
             }
-            ui_icon(e->dir ? UI_IC_FOLDER : UI_IC_FILE, t.x + t.w / 2 - 24, t.y + 36, 48, 245, 245, 245, e->dir ? 255 : 190);
+            has = ui_pk_thumb_draw(e, &box);    /* v51: a picture from the file, or from inside the folder */
+            if (!has) {
+                ui_icon(e->dir ? UI_IC_FOLDER : UI_IC_FILE, box.x + box.w / 2 - 24, box.y + box.h / 2, 48, 245, 245, 245, e->dir ? 255 : 190);
+            } else if (e->dir) {                /* a small folder on the picture says it is a folder */
+                SDL_Rect bd = { box.x - 4, box.y + box.h - 22, 34, 26 };
+
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+                ui_pill(&bd);
+                ui_icon(UI_IC_FOLDER, bd.x + 8, bd.y + bd.h / 2, 18, 245, 245, 245, 255);
+            }
             snprintf(tmp, sizeof(tmp), "%s", e->name);
             ui_fit_text(tmp, 15, t.w - 14);
-            ui_label_c(t.x + t.w / 2, t.y + 78, tmp, 15, 245, 245, 245, 255);
+            ui_label_c(t.x + t.w / 2, t.y + 88, tmp, 15, 245, 245, 245, 255);
             if (e->dir && e->count >= 0)
                 snprintf(buf, sizeof(buf), "%d item%s", e->count, e->count == 1 ? "" : "s");
             else if (!e->dir)
@@ -16060,7 +16731,7 @@ static void ui_pk_draw(void)
             else
                 buf[0] = 0;
             if (buf[0])
-                ui_label_c(t.x + t.w / 2, t.y + 96, buf, 12, 170, 170, 170, 255);
+                ui_label_c(t.x + t.w / 2, t.y + 106, buf, 12, 170, 170, 170, 255);
             if (ui_pk_mode == 2 && !e->dir) {
                 SDL_Rect b = { t.x + 8, t.y + 8, 18, 18 };
 
@@ -16138,6 +16809,9 @@ static void ui_pk_draw(void)
         ui_fit_text(tmp, 17, FFMAX(right - tx - 10, 40));
         ui_label(tx, cy, tmp, 17, 245, 245, 245, 255);
     }
+    if (!ui_pk_grid)
+        ui_pk_nwant = 0;                        /* the list view asks for no pictures */
+    ui_pk_thumb_flush();
     if (ui_pk_nrw == 0) {
         const char *m = ui_pk_filter[0] ? (ui_pk_scan_on ? "Looking ..." : "Nothing matches") : ui_pk_mode == 1 ? "No folders here" :
                         ui_pk_all ? "This folder is empty" : "No music or videos here";
@@ -16229,6 +16903,108 @@ static void ui_pk_toggle_search(void)
     }
 }
 
+
+/* ----- v51: the path typed in the top row (Ctrl+L, or a click on the empty part of the path) ----- */
+static void ui_pk_loc_full(char *out, size_t size)
+{
+    const char *home = getenv("HOME");
+
+    if (ui_pk_loc[0] == '~' && (ui_pk_loc[1] == '/' || !ui_pk_loc[1]) && home)
+        snprintf(out, size, "%s%s", home, ui_pk_loc + 1);
+    else if (ui_pk_loc[0] == '/')
+        snprintf(out, size, "%s", ui_pk_loc);
+    else
+        snprintf(out, size, "%s/%s", ui_pk_dir, ui_pk_loc);
+}
+
+static void ui_pk_loc_start(void)
+{
+    ui_pk_loc_on = 1;
+    ui_pk_loc_fresh = 1;
+    snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s", ui_pk_dir, strcmp(ui_pk_dir, "/") ? "/" : "");
+}
+
+static void ui_pk_loc_go(void)
+{
+    char p[PATH_MAX + 300], real[PATH_MAX];
+    struct stat st;
+
+    if (!ui_pk_loc[0])
+        return;
+    ui_pk_loc_full(p, sizeof(p));
+    if (!realpath(p, real) || stat(real, &st) != 0) {
+        snprintf(ui_pk_note, sizeof(ui_pk_note), "No such folder: %.140s", ui_pk_loc);
+        ui_pk_note_until = av_gettime_relative() + 3000000;
+        return;
+    }
+    ui_pk_loc_on = 0;
+    if (S_ISDIR(st.st_mode)) {
+        ui_pk_go(real);
+    } else {                                    /* a file: its folder opens with the file chosen */
+        char *slash = strrchr(real, '/'), name[PATH_MAX];
+        int i;
+
+        snprintf(name, sizeof(name), "%s", slash ? slash + 1 : real);
+        if (slash)
+            slash[slash == real ? 1 : 0] = 0;
+        ui_pk_go(real);
+        for (i = 0; i < ui_pk_nrw; i++) {
+            UiPkEnt *e = ui_pk_ent(i);
+
+            if (e && !strcmp(e->name, name)) {
+                ui_pk_cur = i;
+                ui_pk_touched = 1;
+                ui_pk_reveal = 1;
+                break;
+            }
+        }
+    }
+}
+
+/* Tab: the folder name being typed is finished (the first folder, in name order, that starts with it) */
+static void ui_pk_loc_complete(void)
+{
+    char full[PATH_MAX + 300], dirpart[PATH_MAX + 300], best[300] = "";
+    char *slash;
+    const char *prefix;
+    DIR *d;
+    struct dirent *de;
+    size_t pl;
+
+    ui_pk_loc_full(full, sizeof(full));
+    if (!(slash = strrchr(full, '/')))
+        return;
+    prefix = slash + 1;
+    pl = strlen(prefix);
+    if (slash == full)
+        snprintf(dirpart, sizeof(dirpart), "/");
+    else
+        snprintf(dirpart, sizeof(dirpart), "%.*s", (int)(slash - full), full);
+    if (!(d = opendir(dirpart)))
+        return;
+    while ((de = readdir(d))) {
+        char sub[PATH_MAX + 600];
+        struct stat st;
+
+        if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && !strncmp(de->d_name, prefix, pl) && (de->d_name[0] != '.' || prefix[0] == '.')) {
+            snprintf(sub, sizeof(sub), "%s/%s", dirpart, de->d_name);
+            if (stat(sub, &st) == 0 && S_ISDIR(st.st_mode) && (!best[0] || av_strcasecmp(de->d_name, best) < 0))
+                snprintf(best, sizeof(best), "%.299s", de->d_name);
+        }
+    }
+    closedir(d);
+    if (best[0])
+        snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s%s/", dirpart, strcmp(dirpart, "/") ? "/" : "", best);
+}
+
+static void ui_pk_toggle_thumbs(void)
+{
+    cfg_pk_thumbs = !cfg_pk_thumbs;
+    settings_save();
+    snprintf(ui_pk_note, sizeof(ui_pk_note), "Thumbnails: %s", cfg_pk_thumbs ? "on" : "off");
+    ui_pk_note_until = av_gettime_relative() + 2000000;
+}
+
 static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
 {
     UiPkLay L;
@@ -16298,6 +17074,8 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
     if (ev->type == SDL_MOUSEBUTTONDOWN) {
         int b = ev->button.button;
 
+        if (ui_pk_loc_on && !ui_pk_in(&L.crumbs, x, y))
+            ui_pk_loc_on = 0;
         if (b == SDL_BUTTON_X1) {
             ui_pk_back(-1);                     /* the back and forward buttons of a mouse */
         } else if (b == SDL_BUTTON_X2) {
@@ -16341,6 +17119,12 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
                         ui_pk_mount(&ui_pk_dev[i]);
                         break;
                     }
+            } else if (nd->grp == 1 && nd->dev && nd->depth == 0 && x >= L.side.x + L.side.w - 42) {      /* the eject mark: unmount */
+                for (i = 0; i < ui_pk_ndev; i++)
+                    if (!strcmp(ui_pk_dev[i].dev, nd->dev)) {
+                        ui_pk_mnt_run(&ui_pk_dev[i], 1);
+                        break;
+                    }
             } else if (nd->kids != 0 && x < L.side.x + 10 + nd->depth * 14 + 18) {
                 if (nd->open)
                     ui_pk_tree_close(n);
@@ -16353,14 +17137,18 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
                 ui_pk_go(to);
             }
         } else if (ui_pk_in(&L.crumbs, x, y)) {
-            for (i = 0; i < ui_pk_ncrumb; i++)
-                if (ui_pk_in(&ui_pk_crumb[i].r, x, y)) {
-                    char to[PATH_MAX];
+            if (!ui_pk_loc_on) {
+                for (i = 0; i < ui_pk_ncrumb; i++)
+                    if (ui_pk_in(&ui_pk_crumb[i].r, x, y)) {
+                        char to[PATH_MAX];
 
-                    snprintf(to, sizeof(to), "%.*s", ui_pk_crumb[i].upto, ui_pk_dir);
-                    ui_pk_go(to[0] ? to : "/");
-                    break;
-                }
+                        snprintf(to, sizeof(to), "%.*s", ui_pk_crumb[i].upto, ui_pk_dir);
+                        ui_pk_go(to[0] ? to : "/");
+                        break;
+                    }
+                if (i >= ui_pk_ncrumb)
+                    ui_pk_loc_start();          /* the empty part of the path: type a path */
+            }
         } else if (ui_pk_hrow >= 0 && av_gettime_relative() - ui_pk_nav_t > 350000) {
             int64_t now = av_gettime_relative();
             int dbl = ui_pk_click_row == ui_pk_hrow && now - ui_pk_click_t < 450000;
@@ -16408,6 +17196,15 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
 
         if (ui_pk_cm_open)
             return 1;
+        if (ui_pk_loc_on) {
+            if (ui_pk_loc_fresh) {              /* the first letter replaces the path that was shown */
+                ui_pk_loc[0] = 0;
+                ui_pk_loc_fresh = 0;
+            }
+            if ((unsigned char)t[0] >= 32 && strlen(ui_pk_loc) + strlen(t) < sizeof(ui_pk_loc) - 1)
+                strcat(ui_pk_loc, t);
+            return 1;
+        }
         if (!ui_pk_filter[0] && !strcmp(t, " "))
             return 1;                           /* the space bar ticks; a search does not start with a space */
         if ((unsigned char)t[0] >= 32 && n + strlen(t) < sizeof(ui_pk_filter) - 1) {
@@ -16442,6 +17239,29 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
             if (k == SDLK_ESCAPE)
                 ui_pk_cm_open = 0;
             return 1;                           /* the menu uses the keys while it is open */
+        }
+        if (ui_pk_loc_on) {                     /* the path is being typed: it takes the keys */
+            size_t n = strlen(ui_pk_loc);
+
+            if (k == SDLK_BACKSPACE || k == SDLK_TAB)
+                ui_pk_loc_fresh = 0;
+            if (k == SDLK_ESCAPE) {
+                ui_pk_loc_on = 0;
+            } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
+                ui_pk_loc_go();
+            } else if (k == SDLK_TAB) {
+                ui_pk_loc_complete();
+            } else if (k == SDLK_BACKSPACE) {
+                if (ctrl) {
+                    ui_pk_loc[0] = 0;
+                } else {
+                    while (n > 0 && (ui_pk_loc[n - 1] & 0xC0) == 0x80)
+                        n--;
+                    if (n > 0)
+                        ui_pk_loc[n - 1] = 0;
+                }
+            }
+            return 1;
         }
         if (k == SDLK_ESCAPE) {
             if (ui_pk_filter[0]) {
@@ -16525,6 +17345,10 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
             ui_pk_reload();
         } else if (ctrl && k == SDLK_f) {
             ui_pk_search_on = 1;
+        } else if (ctrl && k == SDLK_l) {
+            ui_pk_loc_start();
+        } else if (ctrl && k == SDLK_t) {
+            ui_pk_toggle_thumbs();
         } else if (ctrl && (k == SDLK_1 || k == SDLK_2)) {
             if (ui_pk_grid != (k == SDLK_2))
                 ui_pk_toggle_grid();
@@ -16553,6 +17377,7 @@ static void ui_pk_start(int item)
     ui_pk_click_row = -2;
     ui_pk_filter[0] = 0;
     ui_pk_search_on = 0;
+    ui_pk_loc_on = 0;
     ui_pk_cm_open = 0;
     ui_pk_grid = cfg_pk_grid;
     ui_pk_sortk = av_clip(cfg_pk_sort, 0, 2);
@@ -16587,6 +17412,9 @@ static void ui_pk_close(VideoState *is)
 
     ui_pk_open = 0;
     ui_pk_cm_open = 0;
+    ui_pk_loc_on = 0;
+    ui_pk_nwant = 0;
+    ui_pk_thumb_flush();                        /* the thread has nothing more to make */
     ui_pk_free_ents(ui_pk_e, ui_pk_n);
     free(ui_pk_e);
     ui_pk_e = NULL;
