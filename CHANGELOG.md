@@ -6,6 +6,13 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v50
+- Grid view: a button in the top row switches between the list and the grid (Ctrl+1 list, Ctrl+2 grid); it is remembered
+- Drop downs: the left side is a folder tree, every folder opens with its arrow; drives that are not mounted are under Devices and a click mounts them
+- Search by typing: In this folder, Below this folder, Above this folder, Elsewhere; the right click menu (Play now, Play next, Add to queue) works on every result
+- Folder rows show how many items they hold, like Files
+- Sort is one button in the top row (Name, Modified, Size); the choices are remembered
+
 ## v49
 - One top row: Back, Forward, Up, the title, the path, Name / Modified / Size and a close button (Cancel is gone)
 - Back and Forward history (Alt+Left, Alt+Right and the side buttons of a mouse)
