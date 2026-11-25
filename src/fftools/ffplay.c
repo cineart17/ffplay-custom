@@ -1365,7 +1365,7 @@ static double  ui_round_k(void)
 {
     return av_clipd(cfg_round, 0, 100) / 100.0;
 }
-static int     cfg_pk_grid = 0, cfg_pk_sort = 0, cfg_pk_desc = 0, cfg_pk_thumbs = 1;      /* v50: the picker's view (list or grid) and its order */
+static int     cfg_pk_grid = 0, cfg_pk_sort = 0, cfg_pk_desc = 0, cfg_pk_thumbs = 1;      /* picker view and order; all of them are saved between runs */
 static int     cfg_picker = 1;              /* 1 = our own file picker, 0 = the system's dialog (zenity) (v44) */
 static int     cfg_exact_seek = 1;          /* 1 = in a file with close key frames the Left/Right steps land exactly on their time (v41) */
 static int     cfg_bar_r = 84, cfg_bar_g = 120, cfg_bar_b = 168;   /* bar color */
@@ -1424,6 +1424,11 @@ static const char *settings_default_text =
     "\n"
     "# Scroll action (mouse wheel and two finger swipes up and down): 0 = seek by the seek step, 1 = volume, 2 = navigation (a swipe up opens the tiled view)\n"
     "scroll_action = 2\n"
+    "\n"
+    "# File picker: 0 = name, 1 = modified, 2 = size; picker_desc = 1 for the other way round\n"
+    "picker_grid = 0\n"
+    "picker_sort = 0\n"
+    "picker_desc = 0\n"
     "\n"
     "# Font file for the text (leave empty to use the system font)\n"
     "font =\n";
@@ -3487,15 +3492,12 @@ static int ui_pick_thread(void *arg)
     FILE *p;
     int status;
 
-    if (item == 0) {            /* Open File... */
-        cmd = "echo $$; exec zenity --file-selection --title='Open File' 2>/dev/null";
-        what = 'o';
-    } else if (item == 1) {     /* Open Folder... */
-        cmd = "echo $$; exec zenity --file-selection --directory --title='Open Folder' 2>/dev/null";
-        what = 'o';
-    } else {                    /* Add to Queue... (one or more files) */
+    if (item == 2) {            /* Add to Queue... (one or more files) */
         cmd = "echo $$; exec zenity --file-selection --multiple --separator='\\n' --title='Add to Queue' 2>/dev/null";
         what = 'a';
+    } else {                    /* Open Media: one dialog for files and folders */
+        cmd = "echo $$; exec zenity --file-selection --title='Open Media' 2>/dev/null";
+        what = 'o';
     }
 
     p = popen(cmd, "r");
@@ -3559,13 +3561,13 @@ static int ui_menu_rowh = 44;           /* height of one menu row: smaller when 
 
 #define UI_MENU_ITEMS 5         /* rows in the menu */
 #define UI_MENU_ICW 32          /* room for the icon before the name of a row */
-#define UI_ROW_OPEN  0          /* Open: File... and Folder... appear beside it */
+#define UI_ROW_OPEN  0          /* v52: Open Media: files and folders are chosen in the picker */
 #define UI_ROW_QUEUE 1
 #define UI_ROW_INFO  2
 #define UI_ROW_PREFS 3
 #define UI_ROW_QUIT  4
 
-static const char *ui_menu_label[UI_MENU_ITEMS] = { "Open", "Queue", "Media Info",
+static const char *ui_menu_label[UI_MENU_ITEMS] = { "Open Media", "Queue", "Media Info",
                                                     "Preferences...", "Quit" };
 static int ui_idle = 0;         /* 1 while the idle screen is showing */
 static int ui_menu_open = 0;    /* 1 while the right-click menu is showing */
@@ -3582,8 +3584,6 @@ static int ui_q_press_x = 0, ui_q_press_y = 0;
 static VideoState *ui_q_press_is = NULL;
 static int ui_q_drag_y = 0;     /* mouse height while dragging */
 static int ui_info_open = 0;    /* 1 while the Media Info panel is showing beside the menu */
-static int ui_open_open = 0;    /* 1 while the File / Folder choices are showing beside "Open" */
-static int ui_open_hover = -1;  /* the choice under the mouse (0 = File, 1 = Folder) */
 static int ui_q_reveal = 0;     /* 1 = the queue panel was just opened: scroll to the playing item */
 static int ui_ctx_open = 0;     /* 1 while the right-click menu of a queue item is showing */
 static int ui_ctx_x, ui_ctx_y;  /* where it was opened */
@@ -3840,6 +3840,7 @@ enum { UI_IC_OPEN, UI_IC_FOLDER, UI_IC_FILE, UI_IC_QUEUE, UI_IC_INFO, UI_IC_GEAR
        UI_IC_CHEV_R, UI_IC_CHEV_D, UI_IC_CHEV_U, UI_IC_X,
        UI_IC_CHEV_L,
        UI_IC_GRID, UI_IC_LIST, UI_IC_SEARCH, UI_IC_ARR_L, UI_IC_ARR_R, UI_IC_ARR_U, UI_IC_EJECT,
+       UI_IC_ARW_L, UI_IC_ARW_R, UI_IC_ARW_U, UI_IC_ARW_D, UI_IC_PLAY,
        UI_IC_N };
 #define UI_IC_MAXS 80
 typedef struct { float a, b, c, d, e, f; int arc; } UiStroke;       /* a line (a,b to c,d) or an arc (centre a,b, radius c, angles e to f) */
@@ -4003,6 +4004,36 @@ static void ui_icon_build(int id)
         ic_seg(5, 14.5f, 12, 5.5f);
         ic_seg(5.5f, 18.5f, 18.5f, 18.5f);
         break;
+    case UI_IC_ARW_L:                           /* v52: sharp arrows, for the picker only */
+        ic_seg(20, 12, 5, 12);
+        ic_seg(11, 6, 5, 12);
+        ic_seg(5, 12, 11, 18);
+        break;
+    case UI_IC_ARW_R:
+        ic_seg(4, 12, 19, 12);
+        ic_seg(13, 6, 19, 12);
+        ic_seg(19, 12, 13, 18);
+        break;
+    case UI_IC_ARW_U:
+        ic_seg(12, 20, 12, 5);
+        ic_seg(6, 11, 12, 5);
+        ic_seg(12, 5, 18, 11);
+        break;
+    case UI_IC_ARW_D:
+        ic_seg(12, 4, 12, 19);
+        ic_seg(6, 13, 12, 19);
+        ic_seg(12, 19, 18, 13);
+        break;
+    case UI_IC_PLAY: {                              /* a solid triangle for the play buttons */
+        int k;
+
+        for (k = 0; k < 12; k++) {
+            float x = 8.0f + k, y0 = 5.0f + k * 7.0f / 11.0f, y1 = 19.0f - k * 7.0f / 11.0f;
+
+            ic_seg(x, y0, x, y1);
+        }
+        break;
+    }
     case UI_IC_SEARCH:
         ic_arc(10.5f, 10.5f, 6.5f, 0, 360);
         ic_seg(15.5f, 15.5f, 20, 20);
@@ -6565,52 +6596,7 @@ static void ui_end_current(VideoState *is)
     SDL_PushEvent(&e);
 }
 
-/* ----- "Open": the File and Folder choices ----- */
-static SDL_Rect ui_open_rect(int ww, int wh)
-{
-    SDL_Rect m = ui_menu_rect(ww, wh), p;
-    int gap = ui_idle ? 14 : 22;
-
-    p.w = FFMAX(ui_text_width("Folder...", 22), ui_text_width("File...", 22)) + 64 + UI_MENU_ICW;
-    p.h = 2 * UI_MENU_ROW + 16;
-    if (m.x + m.w + gap + p.w <= ww - 8)
-        p.x = m.x + m.w + gap;
-    else
-        p.x = FFMAX(m.x - gap - p.w, 8);
-    p.y = av_clip(m.y + UI_ROW_OPEN * UI_MENU_ROW - 8, 8, FFMAX(wh - p.h - 8, 8));
-    return p;
-}
-
-/* 0 = File, 1 = Folder, -1 = neither */
-static int ui_open_hit(const SDL_Rect *p, int x, int y)
-{
-    if (x < p->x || x >= p->x + p->w || y < p->y + 8 || y >= p->y + 8 + 2 * UI_MENU_ROW)
-        return -1;
-    return (y - p->y - 8) / UI_MENU_ROW;
-}
-
-static void ui_open_draw(int ww, int wh)
-{
-    SDL_Rect p = ui_open_rect(ww, wh);
-    int i, row_y;
-
-    ui_glass(&p, 20);
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    for (i = 0; i < 2; i++) {
-        row_y = p.y + 8 + i * UI_MENU_ROW;
-        ui_icon(i ? UI_IC_FOLDER : UI_IC_FILE, p.x + 28, row_y + UI_MENU_ROW / 2, 20, 240, 240, 240,
-                i == ui_open_hover ? 255 : 190);
-        ui_label(p.x + 28 + UI_MENU_ICW, row_y + UI_MENU_ROW / 2, i ? "Folder..." : "File...", 22, 240, 240, 240,
-                 i == ui_open_hover ? 255 : 205);
-        if (i == ui_open_hover) {
-            SDL_Rect dot = { p.x + 11, row_y + UI_MENU_ROW / 2 - 3, 6, 6 };
-
-            SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r + 40, 0, 255), av_clip(cfg_bar_g + 40, 0, 255),
-                                   av_clip(cfg_bar_b + 40, 0, 255), 235);
-            ui_pill(&dot);
-        }
-    }
-}
+/* v52: there is no File / Folder popup any more: "Open Media" goes straight to the picker. */
 
 /* ----- the menu of a queue item (right-click) ----- */
 #define UI_CTX_ROW 40
@@ -6737,7 +6723,7 @@ static void ui_menu_draw(void)
         row.w = r.w;
         row.h = UI_MENU_ROW;
         cy = row.y + row.h / 2;
-        lit = i == ui_menu_hover || (i == UI_ROW_OPEN && ui_open_open) ||
+        lit = i == ui_menu_hover ||
               (i == UI_ROW_QUEUE && ui_q_open) || (i == UI_ROW_INFO && ui_info_open);
         k = ui_idle ? 1.0 : av_clipd((av_gettime_relative() - ui_menu_anim_t0 - i * 40000) / 180000.0, 0.0, 1.0);
         k = 1.0 - (1.0 - k) * (1.0 - k) * (1.0 - k);        /* ease out: quick, then settling */
@@ -6748,7 +6734,7 @@ static void ui_menu_draw(void)
         }
         ui_label(row.x + 28 + UI_MENU_ICW + (int)((1.0 - k) * 10), cy, ui_menu_label[i], 22, 240, 240, 240,
                  (int)((lit ? 255 : 205) * k));
-        if (i == UI_ROW_OPEN || i == UI_ROW_QUEUE || i == UI_ROW_INFO)
+        if (i == UI_ROW_QUEUE || i == UI_ROW_INFO)
             ui_chevron(row.x + r.w - 22, cy, (int)((lit ? 255 : 170) * k));
         if (lit) {                  /* a small dot marks the row under the mouse */
             dot.x = row.x + 11;
@@ -6767,9 +6753,7 @@ static void ui_menu_draw(void)
         ui_logo_draw(r.x - gap - ls / 2, wh / 2, ls);
     }
     ui_ink_dark = 0;                            /* white text on the side panels */
-    if (ui_open_open)
-        ui_open_draw(ww, wh);
-    else if (ui_q_open)
+    if (ui_q_open)
         ui_q_draw(ww, wh);
     else if (ui_info_open)
         ui_info_draw(ww, wh);
@@ -6782,30 +6766,29 @@ static void ui_menu_draw(void)
 /* Do what a menu row says */
 static void ui_menu_action(VideoState *is, int item)
 {
-    if (item == UI_ROW_OPEN) {          /* Open: the choices appear beside it */
-        ui_open_open = 1;
+    if (item == UI_ROW_OPEN) {          /* v52: Open Media: one picker for files and folders */
+        ui_menu_open = 0;
+        ui_menu_hover = -1;
         ui_q_open = 0;
         ui_info_open = 0;
+        ui_pick_start(0);
         return;
     }
     if (item == UI_ROW_QUEUE) {         /* Queue: show the queue panel */
         ui_q_show();
         ui_info_open = 0;
-        ui_open_open = 0;
-        return;
+                return;
     }
     if (item == UI_ROW_INFO) {          /* Media Info: show the information panel */
         ui_info_open = 1;
         ui_q_open = 0;
-        ui_open_open = 0;
-        return;
+                return;
     }
     ui_menu_open = 0;
     ui_menu_hover = -1;
     ui_q_open = 0;
     ui_info_open = 0;
-    ui_open_open = 0;
-    if (item == UI_ROW_PREFS) {
+        if (item == UI_ROW_PREFS) {
         ui_prefs_open = 1;
         ui_prefs_hover = -1;
     } else {
@@ -6954,7 +6937,6 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
         ui_menu_hover = -1;
         ui_q_open = 0;
         ui_info_open = 0;
-        ui_open_open = 0;
         ui_q_drag = -1;
         ui_wake();
         if (is)
@@ -6991,27 +6973,6 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
             is->force_refresh = 1;
         return 1;
     }
-    if (ui_open_open) {             /* the File / Folder choices */
-        op = ui_open_rect(ww, wh);
-        hit = ui_open_hit(&op, x, y);
-        if (hit >= 0 || (x >= op.x && x < op.x + op.w && y >= op.y && y < op.y + op.h)) {
-            if (ev->type == SDL_MOUSEMOTION) {
-                ui_open_hover = hit;
-                ui_menu_hover = UI_ROW_OPEN;    /* the "Open" row stays lit */
-            } else if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT && hit >= 0) {
-                ui_menu_open = 0;
-                ui_menu_hover = -1;
-                ui_open_open = 0;
-                ui_open_hover = -1;
-                ui_pick_start(hit);     /* 0 = Open File, 1 = Open Folder */
-            }
-            ui_wake();
-            if (is)
-                is->force_refresh = 1;
-            return 1;
-        }
-        ui_open_hover = -1;
-    }
     if (ui_q_open && ui_q_mouse(is, ev, ww, wh, x, y)) {
         if (is)
             is->force_refresh = 1;
@@ -7031,23 +6992,15 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
     if (ev->type == SDL_MOUSEMOTION) {
         ui_menu_hover = row;
         if (row == UI_ROW_OPEN) {
-            ui_open_open = 1;       /* hovering "Open" shows File... and Folder... */
             ui_q_open = 0;
             ui_info_open = 0;
         } else if (row == UI_ROW_QUEUE) {
             ui_q_show();            /* hovering "Queue" opens the queue panel */
             ui_info_open = 0;
-            ui_open_open = 0;
-        } else if (row == UI_ROW_INFO) {
+                    } else if (row == UI_ROW_INFO) {
             ui_info_open = 1;       /* hovering "Media Info" opens the information panel */
             ui_q_open = 0;
-            ui_open_open = 0;
-        } else {
-            if (ui_open_open) {
-                op = ui_open_rect(ww, wh);
-                if (!ui_q_keep(&r, &op, x, y, UI_ROW_OPEN))
-                    ui_open_open = 0;
-            }
+                    } else {
             if (ui_q_open) {
                 p = ui_q_rect(ww, wh);
                 if (!ui_q_keep(&r, &p, x, y, UI_ROW_QUEUE))
@@ -7071,7 +7024,6 @@ static int ui_menu_mouse(VideoState *is, SDL_Event *ev)
             ui_menu_open = 0;       /* click outside closes the popup */
             ui_q_open = 0;
             ui_info_open = 0;
-            ui_open_open = 0;
         } else {
             return 0;               /* idle screen: clicking elsewhere moves the window */
         }
@@ -7166,8 +7118,7 @@ static void ui_menu_tick(VideoState *is)
         seen_gen = q_dur_gen;
         is->force_refresh = 1;
     }
-    if (!ui_menu_open || ui_idle || ui_prefs_open || ui_q_drag >= 0 || ui_q_open || ui_info_open ||
-        ui_open_open || ui_ctx_open)
+    if (!ui_menu_open || ui_idle || ui_prefs_open || ui_q_drag >= 0 || ui_q_open || ui_info_open || ui_ctx_open)
         return;
     if (av_gettime_relative() - ui_menu_last_move > 5000000) {
         ui_menu_open = 0;
@@ -9509,7 +9460,7 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
     SDL_Keycode k = ev->key.keysym.sym;
     const char *p;
 
-    if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open)
+    if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open)
         return 0;
     if ((ev->key.keysym.mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) || (k >= SDLK_F1 && k <= SDLK_F12))
         return 0;
@@ -9582,7 +9533,7 @@ static int ui_tv_text(VideoState *is, const char *t)
 {
     size_t n = strlen(ui_tv_q), m = strlen(t);
 
-    if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open)
+    if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open)
         return 0;
     if (!n && t[0] == ' ')
         return 1;
@@ -11474,9 +11425,9 @@ static void video_display(VideoState *is)
         ui_bg_probe = now;          /* one picture, drawn without waiting for the screen */
     }
 
-    if (ui_too_small() && (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open || ui_tvc_open ||
+    if (ui_too_small() && (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open || ui_tvc_open ||
                            ui_vflow || ui_tv_audio)) {
-        ui_menu_open = ui_prefs_open = ui_q_open = ui_info_open = ui_open_open = ui_ctx_open = ui_tvc_open = 0;       /* v41 */
+        ui_menu_open = ui_prefs_open = ui_q_open = ui_info_open = ui_ctx_open = ui_tvc_open = 0;       /* v41 */
         ui_tv_audio = 0;
         ui_vflow_auto = 0;
         ui_vflow_set(is, 0);
@@ -14081,17 +14032,20 @@ static void ui_pause_tick(VideoState *is)
     } while (0)
 
 /* ================================================================================================================================
-   v44: our own file picker, for Open File, Open Folder and Add to Queue. It is drawn like the Preferences panel (frosted glass over
-   the blurred player) and sends what is chosen to the inbox, like the system dialog did. It needs no other program.
+   v44: our own file picker. It is drawn like the Preferences panel (frosted glass over the blurred player) and sends what is chosen
+   to the inbox, like the system dialog did. It needs no other program.
    v49: reworked. One top bar (back, forward, up, "Open Media", the path, Sort, list or grid, search, close), a folder tree on the left
    with drop downs, drives that are not mounted yet (click to mount), search just by typing (in this folder, below it, above it,
    elsewhere), a dynamic "Modified" column, item counts and sizes at the bottom, and buttons that follow what is selected.
-     Mouse: a click selects a row, a double click opens it (a folder is entered, a file is played); in Add to Queue a click on a file
-            ticks it; the tree, the path and the arrows move around; the wheel scrolls; a click outside closes it.
+   v52: Open Media is the one menu choice: files and folders are both shown. A folder has "Open folder" (go in) and "Play folder";
+        a file has "Play file". Ctrl+click or Space ticks files, Ctrl+A ticks all, and "Play selected files" plays them in the order
+        they were ticked. The tree no longer opens itself; the arrows in the picker are sharp. Sort stays across restarts.
+     Mouse: a click selects a row, a double click opens it (a folder is entered, a file is played); Ctrl+click ticks a file; in Add
+            to Queue a click on a file ticks it; the tree, the path and the arrows move around; the wheel scrolls; a click outside closes it.
             The back and forward buttons of a mouse go back and forward.
-     Keys:  type to search, Up/Down/PageUp/PageDown/Home/End (and Left/Right in the grid), Enter (opens the row, or adds what is ticked),
+     Keys:  type to search, Up/Down/PageUp/PageDown/Home/End (and Left/Right in the grid), Enter (opens the row, or plays/adds what is ticked),
             Right enters a folder, Left or Backspace (with nothing typed) goes up, Alt+Left/Right back and forward, Alt+Up up, Space ticks,
-            Ctrl+A ticks all, Ctrl+1 list, Ctrl+2 grid, Ctrl+F search box, Ctrl+L type a path (Tab finishes a folder name), Ctrl+T thumbnails on or off, Tab shows all files, Ctrl+H shows hidden ones, F5 reads again,
+            Ctrl+A ticks all (in the order chosen), Ctrl+1 list, Ctrl+2 grid, Ctrl+F search box, Ctrl+L type a path (Tab finishes a folder name), Ctrl+T thumbnails on or off, Tab shows all files, Ctrl+H shows hidden ones, F5 reads again,
             Esc clears the search, then closes the search box, then closes the picker.
    ================================================================================================================================ */
 #ifndef DT_DIR                                  /* d_type values (Linux), for a C mode that hides the names */
@@ -14115,7 +14069,7 @@ static void ui_pause_tick(VideoState *is)
 typedef struct {
     char *name;
     char *where;                                /* the folder it is in; NULL = the open folder */
-    int dir, sel, count, sect;                  /* count: items in a folder (-1 = not counted yet); sect: 0 here, 1 below, 2 above, 3 elsewhere */
+    int dir, sel, ord, count, sect;             /* ord: order in which a file was ticked (v52); count: items in a folder (-1 = not counted yet); sect: 0 here, 1 below, 2 above, 3 elsewhere */
     int64_t size;
     time_t mtime;
 } UiPkEnt;
@@ -14146,7 +14100,8 @@ static int ui_pk_nx = 0, ui_pk_xcap = 0;
 static UiPkRow *ui_pk_rw = NULL;                /* the rows of the list: headers and the entries that pass the search */
 static int ui_pk_nrw = 0, ui_pk_crw = 0, ui_pk_content_h = 0, ui_pk_lay_key = -1, ui_pk_rows_ver = 0, ui_pk_cols = 1;
 static char ui_pk_dir[PATH_MAX], ui_pk_last[PATH_MAX], ui_pk_filter[128];
-static int ui_pk_mode = 0;                      /* 0 = Open File, 1 = Open Folder, 2 = Add to Queue */
+static int ui_pk_mode = 0;                      /* v52: 0 = Open Media (files and folders), 2 = Add to Queue */
+static int ui_pk_sel_seq = 0;                   /* counts the ticks, so selected files play in the order they were ticked */
 static int ui_pk_cur = 0, ui_pk_touched = 0;    /* the row with the cursor; touched = the person has chosen it (not just the first row) */
 static int ui_pk_all = 0, ui_pk_hidden = 0;     /* show all files, show hidden ones */
 static int ui_pk_grid = 0, ui_pk_search_on = 0; /* v49: the grid view; the search box is showing */
@@ -14165,7 +14120,6 @@ static int ui_pk_cm_open = 0;                   /* the menu of a row or of Sort 
 static int ui_pk_reveal = 0;
 static int ui_pk_loc_on = 0, ui_pk_loc_fresh = 0;  /* fresh: the path shown has not been touched yet, so typing replaces it */                    /* v51: the path is being typed (Ctrl+L) */
 static char ui_pk_loc[PATH_MAX];
-static int ui_pk_tree_show = -1;                /* v51: the tree node to scroll into view at the next drawing */                    /* 1 = scroll the cursor into view at the next drawing (the rows have no places yet) */
 
 static void ui_pk_close(VideoState *is);
 
@@ -14278,7 +14232,7 @@ static int ui_pk_count_dir(const char *dir)
         }
         if (!isdir && !isreg)
             continue;
-        if (!isdir && (ui_pk_mode == 1 || (!ui_pk_all && !ui_pk_has_ext(de->d_name))))
+        if (!isdir && !ui_pk_all && !ui_pk_has_ext(de->d_name))
             continue;
         n++;
     }
@@ -15072,7 +15026,6 @@ static void ui_pk_hist_push(void)               /* the open folder becomes the n
 
 static void ui_pk_jq_clear(void);
 static void ui_pk_search_start(void);
-static void ui_pk_tree_reveal(void);
 
 /* Read a folder. Returns 0 if it cannot be read (nothing changes then). */
 static int ui_pk_load(const char *dir)
@@ -15104,7 +15057,7 @@ static int ui_pk_load(const char *dir)
         isdir = S_ISDIR(st.st_mode);
         if (!isdir && !S_ISREG(st.st_mode))
             continue;
-        if (!isdir && (ui_pk_mode == 1 || (!ui_pk_all && !ui_pk_has_ext(de->d_name))))
+        if (!isdir && !ui_pk_all && !ui_pk_has_ext(de->d_name))
             continue;                           /* a folder is looked for: no files; else only what can be played, unless all are asked for */
         if (ui_pk_n >= 20000)
             break;
@@ -15128,7 +15081,6 @@ static int ui_pk_load(const char *dir)
     ui_pk_sc = 0.0;
     ui_pk_goal = -1.0;
     ui_pk_rebuild();
-    ui_pk_tree_reveal();                        /* v51: the tree opens down to this folder */
     return 1;
 }
 
@@ -15338,7 +15290,7 @@ static int ui_pk_scan_dir(int q, const UiPkJob *job)
             ui_pk_jq_push(q, full, job->depth + 1);
         if (!add || (!isdir && !isreg) || !av_stristr(de->d_name, ui_pk_filter))
             continue;
-        if (!isdir && (ui_pk_mode == 1 || (!ui_pk_all && !ui_pk_has_ext(de->d_name))))
+        if (!isdir && !ui_pk_all && !ui_pk_has_ext(de->d_name))
             continue;
         if (ui_pk_xc[sect] >= ui_pk_xmax[sect] || ui_pk_nx >= UI_PK_MAXX || ui_pk_dup(job->path, de->d_name))
             continue;
@@ -15913,42 +15865,6 @@ static void ui_pk_tree_recents(void)
     }
 }
 
-/* The tree opens down to the open folder and scrolls to it */
-static void ui_pk_tree_reveal(void)
-{
-    int i, best = -1, cur, guard = 0;
-    size_t bl = 0;
-
-    for (i = 0; i < ui_pk_ntn; i++) {
-        UiPkNode *n = &ui_pk_tn[i];
-
-        if (n->depth == 0 && n->kind == 0 && n->grp != 2 && n->path[0] && ui_pk_under(ui_pk_dir, n->path) && strlen(n->path) >= bl) {
-            best = i;
-            bl = strlen(n->path);
-        }
-    }
-    if (best < 0)
-        return;
-    cur = best;
-    while (strcmp(ui_pk_tn[cur].path, ui_pk_dir) && guard++ < 40) {
-        int j, found = -1;
-
-        if (!ui_pk_tn[cur].open)
-            ui_pk_tree_open(cur);
-        if (!ui_pk_tn[cur].open)
-            break;
-        for (j = cur + 1; j < ui_pk_ntn && ui_pk_tn[j].depth > ui_pk_tn[cur].depth; j++)
-            if (ui_pk_tn[j].depth == ui_pk_tn[cur].depth + 1 && ui_pk_under(ui_pk_dir, ui_pk_tn[j].path)) {
-                found = j;
-                break;
-            }
-        if (found < 0)
-            break;
-        cur = found;
-    }
-    ui_pk_tree_show = cur;
-}
-
 /* Work that waits for the main loop: a new list of drives, a drive that has been mounted, and the search */
 static void ui_pk_scan_tick(VideoState *is)
 {
@@ -16063,12 +15979,13 @@ static void ui_pk_layout(int ww, int wh, UiPkLay *L)
     L->crumbs.h = bh;
     L->crumbs.w = (L->sort_on ? L->sortb.x : L->gridb.x) - 10 - L->crumbs.x;
 
-    L->ok.w = 124;
+    L->ok.w = ui_pk_mode == 0 ? (L->p.w >= 740 ? 196 : 132) : 124;   /* v52: "Play selected files" fits */
     L->ok.h = 38;
     L->ok.x = L->p.x + L->p.w - 20 - L->ok.w;
     L->ok.y = L->p.y + L->p.h - UI_PK_FOOT + (UI_PK_FOOT - 38) / 2;
     L->extra = L->ok;
-    L->extra.w = ui_pk_mode == 2 ? (L->p.w >= 740 ? 150 : 96) : 104;
+    L->extra.w = ui_pk_mode == 0 ? (L->p.w >= 740 ? 132 : 92) :
+                 ui_pk_mode == 2 ? (L->p.w >= 740 ? 150 : 96) : 104;
     L->extra.x = L->ok.x - 10 - L->extra.w;
     L->tog = L->p.w >= 900;
     L->all.x = L->p.x + 20 + 330;
@@ -16076,7 +15993,7 @@ static void ui_pk_layout(int ww, int wh, UiPkLay *L)
     L->all.w = ui_text_width("All files: Off", 15) + 10;
     L->all.h = 38;
     L->hid = L->all;
-    L->hid.x = ui_pk_mode != 1 ? L->all.x + L->all.w + 14 : L->all.x;
+    L->hid.x = L->all.x + L->all.w + 14;
     L->hid.w = ui_text_width("Hidden: Off", 15) + 10;
 }
 
@@ -16117,6 +16034,41 @@ static void ui_pk_send(VideoState *is, char what, const char *path)
     }
 }
 
+static int ui_pk_ord_cmp(const void *a, const void *b)
+{
+    const UiPkEnt *x = *(UiPkEnt * const *)a, *y = *(UiPkEnt * const *)b;
+
+    return x->ord - y->ord;
+}
+
+/* Play or add all ticked files, in the order they were ticked (v52) */
+static void ui_pk_send_selected(VideoState *is, char what)
+{
+    UiPkEnt **v = NULL;
+    int n = 0, i, cap = ui_pk_n + ui_pk_nx;
+    char path[PATH_MAX + 300];
+
+    if (!cap)
+        return;
+    if (!(v = calloc(cap, sizeof(*v))))
+        return;
+    for (i = 0; i < ui_pk_n; i++)
+        if (ui_pk_e[i].sel)
+            v[n++] = &ui_pk_e[i];
+    for (i = 0; i < ui_pk_nx; i++)
+        if (ui_pk_x[i].sel)
+            v[n++] = &ui_pk_x[i];
+    if (n > 1)
+        qsort(v, n, sizeof(*v), ui_pk_ord_cmp);
+    for (i = 0; i < n; i++) {
+        ui_pk_path_of(v[i], path, sizeof(path));
+        ui_pk_send(is, i ? 'a' : (what == 'o' ? 'o' : 'a'), path);
+    }
+    free(v);
+    if (n)
+        ui_pk_close(is);
+}
+
 static void ui_pk_enter(const UiPkEnt *e)       /* go into a folder */
 {
     char path[PATH_MAX + 300];
@@ -16125,68 +16077,48 @@ static void ui_pk_enter(const UiPkEnt *e)       /* go into a folder */
     ui_pk_go(path);
 }
 
-/* The main button (right end of the foot):
-   Open File: Open for a folder, Play for a file. Open Folder: Play (the selected folder, or the open one). Add to Queue: Add. */
+/* The main button (right end of the foot), v52:
+   Open Media: "Play file" for a file, "Play folder" for a folder, "Play selected files" for a ticked set.
+   Add to Queue: "Add", in the order the files were ticked. */
 static void ui_pk_do_ok(VideoState *is)
 {
     char path[PATH_MAX + 300];
     UiPkEnt *e = ui_pk_cur_ent();
-    int i, sent = 0;
 
-    if (ui_pk_mode == 1) {
-        if (e && e->dir && ui_pk_touched)
-            ui_pk_path_of(e, path, sizeof(path));
-        else
-            snprintf(path, sizeof(path), "%s", ui_pk_dir);
-        ui_pk_send(is, 'o', path);
-        ui_pk_close(is);
-    } else if (ui_pk_mode == 2) {
-        for (i = 0; i < ui_pk_n; i++)
-            if (ui_pk_e[i].sel) {
-                ui_pk_path_of(&ui_pk_e[i], path, sizeof(path));
-                ui_pk_send(is, 'a', path);
-                sent++;
-            }
-        for (i = 0; i < ui_pk_nx; i++)
-            if (ui_pk_x[i].sel) {
-                ui_pk_path_of(&ui_pk_x[i], path, sizeof(path));
-                ui_pk_send(is, 'a', path);
-                sent++;
-            }
-        if (!sent && e && !e->dir) {
+    if (ui_pk_ticked(NULL) > 0) {
+        ui_pk_send_selected(is, ui_pk_mode == 2 ? 'a' : 'o');
+        return;
+    }
+    if (ui_pk_mode == 2) {
+        if (e && !e->dir) {
             ui_pk_path_of(e, path, sizeof(path));
             ui_pk_send(is, 'a', path);
-            sent = 1;
-        }
-        if (sent)
-            ui_pk_close(is);
-    } else if (e) {
-        if (e->dir) {
-            ui_pk_enter(e);
-        } else {
-            ui_pk_path_of(e, path, sizeof(path));
-            ui_pk_send(is, 'o', path);
             ui_pk_close(is);
         }
+        return;
     }
+    if (!e)
+        return;
+    ui_pk_path_of(e, path, sizeof(path));
+    ui_pk_send(is, 'o', path);                  /* a folder plays everything in it */
+    ui_pk_close(is);
 }
 
-/* The button next to it: Open (Open Folder: goes into the selected folder) or Add this folder (Add to Queue) */
+/* The button before the play button: "Open folder" (go into it), or "Add this folder" in Add to Queue */
 static void ui_pk_do_extra(VideoState *is)
 {
     char path[PATH_MAX + 300];
     UiPkEnt *e = ui_pk_cur_ent();
 
-    if (ui_pk_mode == 1) {
-        if (e && e->dir)
-            ui_pk_enter(e);
-    } else if (ui_pk_mode == 2) {
+    if (ui_pk_mode == 2) {
         if (e && e->dir && ui_pk_touched)
             ui_pk_path_of(e, path, sizeof(path));
         else
             snprintf(path, sizeof(path), "%s", ui_pk_dir);
         ui_pk_send(is, 'a', path);
         ui_pk_close(is);
+    } else if (e && e->dir) {
+        ui_pk_enter(e);
     }
 }
 
@@ -16207,8 +16139,15 @@ static void ui_pk_tick_row(int row)
 {
     UiPkEnt *e = ui_pk_ent(row);
 
-    if (e && ui_pk_mode == 2 && !e->dir)
-        e->sel ^= 1;
+    if (!e || e->dir)
+        return;
+    e->sel = !e->sel;
+    if (e->sel) {
+        if (!e->ord)
+            e->ord = ++ui_pk_sel_seq;           /* the order chosen, kept across sorts and searches */
+    } else {
+        e->ord = 0;
+    }
 }
 
 /* ----- the menus: a row (right click: Play now, Play next, Add to queue; a folder: Open folder, Play folder, ...) and Sort ----- */
@@ -16339,7 +16278,7 @@ static void ui_pk_cm_draw(void)
         }
         ui_label(row.x + 14, row.y + row.h / 2, ui_pk_cm_lab[i], 16, 245, 245, 245, i == ui_pk_cm_hot || on ? 255 : 215);
         if (on)
-            ui_icon(ui_pk_desc ? UI_IC_CHEV_D : UI_IC_CHEV_U, row.x + row.w - 28, row.y + row.h / 2, 16, av_clip(cfg_bar_r + 70, 0, 255),
+            ui_icon(ui_pk_desc ? UI_IC_ARW_D : UI_IC_ARW_U, row.x + row.w - 28, row.y + row.h / 2, 16, av_clip(cfg_bar_r + 70, 0, 255),
                     av_clip(cfg_bar_g + 70, 0, 255), av_clip(cfg_bar_b + 70, 0, 255), 255);
     }
 }
@@ -16351,6 +16290,8 @@ static int ui_pk_in(const SDL_Rect *r, int x, int y)
 
 static void ui_pk_button(const SDL_Rect *r, const char *label, int hot, int primary, int enabled)
 {
+    int play = primary && strstr(label, "Play") == label;   /* v52: a play triangle like the one on a video's button */
+
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     if (primary)
         SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r, 0, 255), av_clip(cfg_bar_g, 0, 255), av_clip(cfg_bar_b, 0, 255),
@@ -16358,7 +16299,9 @@ static void ui_pk_button(const SDL_Rect *r, const char *label, int hot, int prim
     else
         SDL_SetRenderDrawColor(renderer, 255, 255, 255, !enabled ? 14 : hot ? 60 : 30);
     ui_pill(r);
-    ui_label_c(r->x + r->w / 2, r->y + r->h / 2, label, 16, 245, 245, 245, enabled ? 255 : 120);
+    ui_label_c(r->x + r->w / 2 + (play && r->w >= 150 ? 11 : 0), r->y + r->h / 2, label, 16, 245, 245, 245, enabled ? 255 : 120);
+    if (play && r->w >= 150)
+        ui_icon(UI_IC_PLAY, r->x + 11, r->y + r->h / 2, 18, 245, 245, 245, enabled ? 255 : 120);
 }
 
 /* A round button with an icon in the top bar */
@@ -16442,7 +16385,7 @@ static void ui_pk_draw(void)
     UiPkLay L;
     SDL_Rect r, clip;
     char buf[PATH_MAX + 96], tmp[PATH_MAX + 96];
-    int ww, wh, i, mx = 0, my = 0, x, cy, cols_size, cols_mod, cols_loc, ar, ag, ab;
+    int ww, wh, i, mx = 0, my = 0, x, cy, cols_size, cols_mod, cols_loc, ar, ag, ab, selecting;
     int64_t cbud;
     time_t now = time(NULL);
 
@@ -16485,9 +16428,9 @@ static void ui_pk_draw(void)
         mx = my = -1000;                        /* the menu has the mouse: nothing under it lights up */
 
     /* ---- the top bar: back, forward, up, the title, the path, Sort, list or grid, search, close ---- */
-    ui_pk_ibtn(&L.back, UI_IC_ARR_L, ui_pk_hbtn == 20, 0, ui_pk_hi > 0 ? 255 : 90);
-    ui_pk_ibtn(&L.fwd, UI_IC_ARR_R, ui_pk_hbtn == 21, 0, ui_pk_hi >= 0 && ui_pk_hi < ui_pk_hn - 1 ? 255 : 90);
-    ui_pk_ibtn(&L.upb, UI_IC_ARR_U, ui_pk_hbtn == 22, 0, strcmp(ui_pk_dir, "/") ? 255 : 90);
+    ui_pk_ibtn(&L.back, UI_IC_ARW_L, ui_pk_hbtn == 20, 0, ui_pk_hi > 0 ? 255 : 90);
+    ui_pk_ibtn(&L.fwd, UI_IC_ARW_R, ui_pk_hbtn == 21, 0, ui_pk_hi >= 0 && ui_pk_hi < ui_pk_hn - 1 ? 255 : 90);
+    ui_pk_ibtn(&L.upb, UI_IC_ARW_U, ui_pk_hbtn == 22, 0, strcmp(ui_pk_dir, "/") ? 255 : 90);
     if (L.title_on)
         ui_label(L.upb.x + L.upb.w + 18, L.top.y + UI_PK_TOP / 2, ui_pk_title(), 20, 245, 245, 245, 255);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, ui_pk_loc_on ? 34 : 16);                    /* the path sits in a soft pill, like the path bar of Files */
@@ -16568,7 +16511,7 @@ static void ui_pk_draw(void)
             ui_label(x, cy, tmp, 16, 245, 245, 245, last_seg ? 255 : 190);
             x += sw;
             if (!last_seg) {
-                ui_icon(UI_IC_CHEV_R, x + 7, cy, 14, 150, 150, 150, 255);
+                ui_icon(UI_IC_ARW_R, x + 7, cy, 14, 150, 150, 150, 255);
                 x += gap;
             }
         }
@@ -16580,7 +16523,7 @@ static void ui_pk_draw(void)
         }
         ui_label(L.sortb.x + 16, L.sortb.y + L.sortb.h / 2, ui_pk_sortname(), 15, av_clip(ar + 70, 0, 255), av_clip(ag + 70, 0, 255),
                  av_clip(ab + 70, 0, 255), 255);
-        ui_icon(ui_pk_desc ? UI_IC_CHEV_D : UI_IC_CHEV_U, L.sortb.x + L.sortb.w - 28, L.sortb.y + L.sortb.h / 2, 14, 190, 190, 190, 255);
+        ui_icon(ui_pk_desc ? UI_IC_ARW_D : UI_IC_ARW_U, L.sortb.x + L.sortb.w - 28, L.sortb.y + L.sortb.h / 2, 14, 190, 190, 190, 255);
     }
     ui_pk_ibtn(&L.gridb, ui_pk_grid ? UI_IC_LIST : UI_IC_GRID, ui_pk_hbtn == 24, 0, 255);
     ui_pk_ibtn(&L.srchb, UI_IC_SEARCH, ui_pk_hbtn == 25, L.sbox_on, 255);
@@ -16592,15 +16535,6 @@ static void ui_pk_draw(void)
     if (L.side_on) {
         double smax = FFMAX(0.0, ui_pk_ntn * (double)UI_PK_TROW + 12 - L.side.h);
 
-        if (ui_pk_tree_show >= 0) {             /* v51: scroll to a node the tree opened down to */
-            double ty = ui_pk_tree_show * (double)UI_PK_TROW;
-
-            if (ty < ui_pk_ssc)
-                ui_pk_ssc = ty;
-            else if (ty + UI_PK_TROW + 12 > ui_pk_ssc + L.side.h)
-                ui_pk_ssc = ty + UI_PK_TROW + 12 - L.side.h;
-            ui_pk_tree_show = -1;
-        }
         ui_pk_ssc = av_clipd(ui_pk_ssc, 0.0, smax);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 55);
         SDL_RenderFillRect(renderer, &L.side);
@@ -16627,7 +16561,7 @@ static void ui_pk_draw(void)
                 ui_pill(&r);
             }
             if (mounted && nd->kids != 0)
-                ui_icon(nd->open ? UI_IC_CHEV_D : UI_IC_CHEV_R, ix, ry + UI_PK_TROW / 2, 14, 200, 200, 200, 255);
+                ui_icon(nd->open ? UI_IC_ARW_D : UI_IC_ARW_R, ix, ry + UI_PK_TROW / 2, 14, 200, 200, 200, 255);
             ui_icon(UI_IC_FOLDER, ix + 18, ry + UI_PK_TROW / 2, 16, 245, 245, 245, mounted ? (on ? 255 : 210) : 120);
             snprintf(tmp, sizeof(tmp), "%s", nd->name);
             ui_fit_text(tmp, 15, L.side.w - (ix - L.side.x) - 18 - 34 - (nd->kind == 1 ? 50 : 0) - (nd->grp == 1 && nd->dev && nd->kind == 0 && nd->depth == 0 ? 30 : 0));
@@ -16671,6 +16605,7 @@ static void ui_pk_draw(void)
     cols_mod = L.list.w >= 640 && !ui_pk_filter[0];
     cols_loc = L.list.w >= 560 && ui_pk_filter[0];
     cbud = av_gettime_relative() + 3000;
+    selecting = ui_pk_mode == 2 || ui_pk_ticked(NULL) > 0;    /* v52: a tick box appears once files are ticked */
     ui_pk_thumb_begin();
     for (i = ui_pk_first_vis(); i < ui_pk_nrw; i++) {
         UiPkRow *w = &ui_pk_rw[i];
@@ -16732,7 +16667,7 @@ static void ui_pk_draw(void)
                 buf[0] = 0;
             if (buf[0])
                 ui_label_c(t.x + t.w / 2, t.y + 106, buf, 12, 170, 170, 170, 255);
-            if (ui_pk_mode == 2 && !e->dir) {
+            if (selecting && !e->dir) {
                 SDL_Rect b = { t.x + 8, t.y + 8, 18, 18 };
 
                 SDL_SetRenderDrawColor(renderer, 245, 245, 245, e->sel ? 255 : 150);
@@ -16762,7 +16697,7 @@ static void ui_pk_draw(void)
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, i == ui_pk_hrow ? 30 : 16);
             ui_pill(&r);
         }
-        if (ui_pk_mode == 2 && !e->dir) {       /* a box to tick */
+        if (selecting && !e->dir) {             /* a box to tick */
             SDL_Rect b = { tx, cy - 9, 18, 18 };
 
             SDL_SetRenderDrawColor(renderer, 245, 245, 245, e->sel ? 255 : 150);
@@ -16778,7 +16713,7 @@ static void ui_pk_draw(void)
                 SDL_RenderDrawRect(renderer, &b);
             }
         }
-        if (ui_pk_mode == 2)
+        if (selecting)
             tx += 30;
         ui_icon(e->dir ? UI_IC_FOLDER : UI_IC_FILE, tx + 8, cy, 18, 245, 245, 245, e->dir ? 255 : 190);
         tx += 38;
@@ -16813,7 +16748,7 @@ static void ui_pk_draw(void)
         ui_pk_nwant = 0;                        /* the list view asks for no pictures */
     ui_pk_thumb_flush();
     if (ui_pk_nrw == 0) {
-        const char *m = ui_pk_filter[0] ? (ui_pk_scan_on ? "Looking ..." : "Nothing matches") : ui_pk_mode == 1 ? "No folders here" :
+        const char *m = ui_pk_filter[0] ? (ui_pk_scan_on ? "Looking ..." : "Nothing matches") :
                         ui_pk_all ? "This folder is empty" : "No music or videos here";
 
         ui_label_c(L.list.x + L.list.w / 2, L.list.y + L.list.h / 2, m, 18, 170, 170, 170, 255);
@@ -16845,31 +16780,36 @@ static void ui_pk_draw(void)
             ui_label(L.p.x + 20, fy, tmp, 15, 190, 190, 190, 255);
         }
         if (L.tog) {
-            if (ui_pk_mode != 1) {
-                snprintf(tmp, sizeof(tmp), "All files: %s", ui_pk_all ? "On" : "Off");
-                ui_label(L.all.x, fy, tmp, 15, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, 255);
-            }
+            snprintf(tmp, sizeof(tmp), "All files: %s", ui_pk_all ? "On" : "Off");
+            ui_label(L.all.x, fy, tmp, 15, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, 255);
             snprintf(tmp, sizeof(tmp), "Hidden: %s", ui_pk_hidden ? "On" : "Off");
             ui_label(L.hid.x, fy, tmp, 15, ui_pk_hbtn == 6 ? 255 : 190, ui_pk_hbtn == 6 ? 255 : 190, ui_pk_hbtn == 6 ? 255 : 190, 255);
         }
     }
     {
         UiPkEnt *ce = ui_pk_cur_ent();
-        int nt = ui_pk_mode == 2 ? ui_pk_ticked(NULL) : 0;
+        int nt = ui_pk_ticked(NULL);
+        int wide = L.p.w >= 740;
 
-        if (ui_pk_mode == 1) {
-            ui_pk_button(&L.extra, "Open", ui_pk_hbtn == 3, 0, ce && ce->dir);
-            ui_pk_button(&L.ok, "Play", ui_pk_hbtn == 1, 1, 1);
-        } else if (ui_pk_mode == 2) {
-            snprintf(tmp, sizeof(tmp), "%s", L.p.w >= 740 ? "Add this folder" : "Folder");
+        if (ui_pk_mode == 2) {
+            snprintf(tmp, sizeof(tmp), "%s", wide ? "Add this folder" : "Folder");
             ui_pk_button(&L.extra, tmp, ui_pk_hbtn == 3, 0, 1);
             if (nt > 0)
                 snprintf(tmp, sizeof(tmp), "Add %d", nt);
             else
                 snprintf(tmp, sizeof(tmp), "Add");
             ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1, nt > 0 || (ce && !ce->dir));
-        } else {                                /* the button follows what is selected: a folder is opened, a file is played */
-            ui_pk_button(&L.ok, ce && !ce->dir ? "Play" : "Open", ui_pk_hbtn == 1, 1, ce != NULL);
+        } else if (ce && ce->dir && !nt) {       /* v52: a folder has "Open folder" and "Play folder" */
+            ui_pk_button(&L.extra, wide ? "Open folder" : "Open", ui_pk_hbtn == 3, 0, 1);
+            ui_pk_button(&L.ok, wide ? "Play folder" : "Play", ui_pk_hbtn == 1, 1, 1);
+        } else {
+            if (nt > 1)
+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play selected files" : "Play selected");
+            else if (ce && !ce->dir)
+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play file" : "Play");
+            else
+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play file" : "Play");
+            ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1, nt > 0 || (ce && !ce->dir));
         }
     }
     ui_pk_cm_draw();
@@ -17064,9 +17004,9 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
         ui_pk_hbtn = 26;
     else if (ui_pk_in(&L.ok, x, y))
         ui_pk_hbtn = 1;
-    else if (ui_pk_mode != 0 && ui_pk_in(&L.extra, x, y))
+    else if (ui_pk_in(&L.extra, x, y))
         ui_pk_hbtn = 3;
-    else if (L.tog && ui_pk_mode != 1 && ui_pk_in(&L.all, x, y))
+    else if (L.tog && ui_pk_in(&L.all, x, y))
         ui_pk_hbtn = 5;
     else if (L.tog && ui_pk_in(&L.hid, x, y))
         ui_pk_hbtn = 6;
@@ -17161,8 +17101,8 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
             if (dbl) {
                 ui_pk_click_row = -2;
                 ui_pk_activate(is);
-            } else if (ui_pk_mode == 2 && e && !e->dir) {
-                ui_pk_tick_row(ui_pk_hrow);     /* a click ticks the file */
+            } else if ((ui_pk_mode == 2 || (ui_pk_mode == 0 && (SDL_GetModState() & KMOD_CTRL))) && e && !e->dir) {
+                ui_pk_tick_row(ui_pk_hrow);     /* Ctrl+click ticks a file (a plain click in Add to Queue ticks it) */
             } else if (ui_pk_mode == 2 && e) {  /* a folder is entered with one click: there is nothing to tick on it */
                 ui_pk_click_row = -2;
                 ui_pk_activate(is);
@@ -17300,7 +17240,7 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
                 ui_pk_clamp_scroll(&L);
             }
         } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
-            if ((ui_pk_mode == 2 && ui_pk_ticked(NULL) > 0) || (ui_pk_mode == 1 && ctrl))
+            if (ui_pk_ticked(NULL) > 0)
                 ui_pk_do_ok(is);
             else
                 ui_pk_activate(is);
@@ -17324,21 +17264,23 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
             }
             ui_pk_search_start();
         } else if (k == SDLK_SPACE && !ui_pk_filter[0]) {
-            if (ui_pk_mode == 2) {
+            {
                 ui_pk_tick_row(ui_pk_cur);
                 ui_pk_cur = ui_pk_grid ? ui_pk_hstep(ui_pk_cur, 1) : ui_pk_vstep(ui_pk_cur, 1);
                 ui_pk_touched = 1;
                 ui_pk_show_cursor(&L);
                 ui_pk_clamp_scroll(&L);
             }
-        } else if (ctrl && k == SDLK_a && ui_pk_mode == 2) {
+        } else if (ctrl && k == SDLK_a) {        /* v52: Ctrl+A ticks every file, in the order of the list */
             int i;
 
             for (i = 0; i < ui_pk_nrw; i++) {
                 UiPkEnt *e = ui_pk_ent(i);
 
-                if (e && !e->dir)
+                if (e && !e->dir && !e->sel) {
                     e->sel = 1;
+                    e->ord = ++ui_pk_sel_seq;
+                }
             }
         } else if (ctrl && k == SDLK_h) {
             ui_pk_hidden = !ui_pk_hidden;
@@ -17355,7 +17297,7 @@ static int ui_pk_event(VideoState *is, SDL_Event *ev)
         } else if (k == SDLK_F5) {
             ui_pk_dev_next = 0;
             ui_pk_reload();
-        } else if (k == SDLK_TAB && ui_pk_mode != 1) {
+        } else if (k == SDLK_TAB) {
             ui_pk_all = !ui_pk_all;
             ui_pk_reload();
         }
@@ -17370,7 +17312,8 @@ static void ui_pk_start(int item)
 
     if (ui_pk_open || !window)
         return;
-    ui_pk_mode = item == 1 ? 1 : item == 2 ? 2 : 0;
+    ui_pk_mode = item == 2 ? 2 : 0;              /* v52: Open Media handles files and folders */
+    ui_pk_sel_seq = 0;
     ui_pk_all = 0;
     ui_pk_hidden = 0;
     ui_pk_hrow = ui_pk_hnode = ui_pk_hbtn = -1;
@@ -17398,7 +17341,6 @@ static void ui_pk_start(int item)
     ui_menu_open = 0;
     ui_q_open = 0;
     ui_info_open = 0;
-    ui_open_open = 0;
     ui_ctx_open = 0;
     ui_tvc_open = 0;
     ui_menu_hover = -1;
@@ -18341,7 +18283,6 @@ static void ui_idle_loop(void)
     ui_menu_hover = -1;
     ui_q_open = 0;
     ui_info_open = 0;
-    ui_open_open = 0;
     ui_ctx_open = 0;
     ui_q_drag = -1;
 
@@ -18365,11 +18306,10 @@ static void ui_idle_loop(void)
             case SDL_KEYDOWN:
                 ev.key.keysym.sym = ui_key_translate(ev.key.keysym.sym);   /* the keys chosen in settings.conf */
                 if (ev.key.keysym.sym == SDLK_ESCAPE) {
-                    if (ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open) {
+                    if (ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open) {
                         ui_prefs_open = 0;
                         ui_q_open = 0;
                         ui_info_open = 0;
-                        ui_open_open = 0;
                         ui_ctx_open = 0;
                     } else if (is_full_screen) {
                         toggle_full_screen(NULL);
@@ -18550,12 +18490,11 @@ static void event_loop(VideoState *cur_stream)
             }
             event.key.keysym.sym = ui_key_translate(event.key.keysym.sym);   /* the keys chosen in settings.conf */
             if (event.key.keysym.sym == SDLK_ESCAPE) {
-                if (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_open_open || ui_ctx_open) {
+                if (ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open) {
                     ui_menu_open = 0;
                     ui_prefs_open = 0;
                     ui_q_open = 0;
                     ui_info_open = 0;
-                    ui_open_open = 0;
                     ui_ctx_open = 0;
                     cur_stream->force_refresh = 1;
                 } else if (is_full_screen) {

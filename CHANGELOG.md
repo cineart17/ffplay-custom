@@ -6,6 +6,13 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v52
+- Open Media is one menu choice: the picker shows files and folders, with no separate Open File or Open Folder
+- A folder has Open folder (go into it) and Play folder; a file has Play file, with a play triangle on the button
+- Ctrl+click or Space ticks files and Ctrl+A ticks all; Play selected files plays them in the order they were ticked
+- The folder tree no longer opens itself down to the current folder
+- Sharp arrows in the file picker instead of chevrons; the sort order and direction survive a restart
+
 ## v51
 - Thumbnails in the grid view: a picture from the video, the cover of a song, and for a folder a picture of something inside it (Ctrl+T turns them off)
 - The tree opens itself down to the open folder
