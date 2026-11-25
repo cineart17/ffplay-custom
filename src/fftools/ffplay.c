@@ -3589,11 +3589,6 @@ static int ui_ctx_open = 0;     /* 1 while the right-click menu of a queue item 
 static int ui_ctx_x, ui_ctx_y;  /* where it was opened */
 static int ui_ctx_hover = -1;   /* its row under the mouse */
 static char *ui_ctx_name = NULL;    /* the queue item it is for */
-static double ui_chip_e = 0.0;          /* 0 to 1: how far the sleep timer row has changed into its choices */
-static int64_t ui_chip_last = 0;
-static double ui_xf_e = 0.0;            /* 0 to 1: how far the crossfade row has changed into its choices */
-static double ui_xf_pop[7], ui_sl_pop[6];       /* 0 to 1: how far each choice has risen under the mouse */
-static int64_t ui_xf_last = 0;
 static int ui_xf_anim = 0;
 static int ui_chip_anim = 0;            /* 1 = it is still gliding */
 static int ui_q_hover_kind = 0;     /* what the mouse is over in the queue panel (UI_Q_NONE ...) */
@@ -3601,7 +3596,6 @@ static int ui_q_hover_idx = -1;     /* ... and which item or choice */
 static int64_t ui_menu_anim_t0 = 0; /* when the popup menu opened (its rows fade in from then) */
 static int64_t ui_q_anim_t0 = 0;    /* when the queue panel opened (its rows fade in from then) */
 static int64_t ui_menu_last_move = 0;      /* when the mouse last moved over the popup menu */
-static int64_t ui_q_scroll_next = 0;       /* earliest time for the next scroll step while dragging */
 static int ui_q_autoscroll(void);
 static VideoState *ui_menu_stream = NULL;   /* the stream the menu is drawn over (NULL = idle screen) */
 
@@ -3816,20 +3810,6 @@ static void ui_label_cs(int cx, int cy, const char *s, int px, int r, int g, int
     SDL_SetTextureColorMod(tex, r, g, b);
     SDL_SetTextureAlphaMod(tex, a);
     SDL_RenderCopy(renderer, tex, NULL, &dst);
-}
-
-/* A soft arrowhead for the menus: a flat, fine chevron with a faint halo, pointing left (dir = -1) or
-   right (dir = 1). cx, cy = its middle. a = how strong it is (0 to 255). */
-static void ui_arrow(int cx, int cy, int dir, int a)
-{
-    int k, tail = cx - dir * 3, tip = cx + dir * 3, h = 5;
-
-    a = av_clip((int)(a * ui_fade), 0, 255);       /* (a can arrive below 0 while the menu fades in) */
-    for (k = -1; k <= 1; k++) {
-        SDL_SetRenderDrawColor(renderer, 225, 225, 225, k ? a / 5 : a);
-        SDL_RenderDrawLine(renderer, tail, cy - h + k, tip, cy + k);
-        SDL_RenderDrawLine(renderer, tip, cy + k, tail, cy + h + k);
-    }
 }
 
 /* ----- line icons -----
@@ -4972,26 +4952,6 @@ static int ui_step_list(const int *list, int n, double value, int dir)
     return list[av_clip(best + dir, 0, n - 1)];
 }
 
-/* The text shown on the right of a row */
-static void ui_pref_value(int row, char *out, size_t size)
-{
-    int i;
-
-    row++;                                      /* v39: the Seek step row is gone, the numbers below keep their old meaning */
-    switch (row) {
-    case 0: snprintf(out, size, "%g s", cfg_seek); break;
-    case 1: snprintf(out, size, "%d", cfg_vol_step); break;
-    case 2: snprintf(out, size, "%g s", cfg_hide_delay / 1000000.0); break;
-    case 3: snprintf(out, size, "%s", cfg_fullscreen ? "On" : "Off"); break;
-    case 4:
-        i = ui_color_index();
-        snprintf(out, size, "%s", i >= 0 ? ui_colors[i].name : "Custom");
-        break;
-    case 5: snprintf(out, size, "%s", cfg_remember_volume ? "On" : "Off"); break;
-    case 6: snprintf(out, size, "%s", cfg_quit_when_done ? "On" : "Off"); break;
-    default: snprintf(out, size, "%s", cfg_wheel == 1 ? "Volume" : cfg_wheel == 2 ? "Navigation" : "Seek"); break;
-    }
-}
 
 /* The choices of a row, for the list that shows when the mouse is on it. Returns how many; sel = the one that is on (or -1) */
 static const double ui_seek_choices[] = { 0.3, 0.5, 1, 2, 3, 5, 10, 15, 30 };
@@ -5816,45 +5776,6 @@ static const char *const ui_chip_short[6] = { "Off", "End", "5m", "10m", "30m", 
 static const char *const ui_xf_names[7] = { "Off", "1s", "2s", "3s", "5s", "8s", "10s" };
 static const int ui_xf_vals[7] = { 0, 1, 2, 3, 5, 8, 10 };
 
-/* Where the choices of a row under the list go: on the right of its name (labelw wide), which stays. The long names are used
-   when they fit, then the short ones, then smaller text. Returns the names to draw; *px is their text size. */
-static const char *const *ui_q_chips_for(const SDL_Rect *p, int cy, int labelw, int n, const char *const *full,
-                                         const char *const *shrt, SDL_Rect *out, int *px)
-{
-    static const int pxs[3] = { 14, 15, 13 }, pads[3] = { 10, 8, 6 };
-    const char *const *names = full;
-    int pass, i, w[8], total = 0, x, room = p->w - 40 - labelw - 14 - UI_Q_ICW - 10;
-
-    for (pass = 0; pass < 3; pass++) {
-        names = pass == 0 ? full : shrt;
-        total = 0;
-        for (i = 0; i < n; i++) {
-            w[i] = ui_text_width(names[i], pxs[pass]) + pads[pass];
-            total += w[i] + (i ? 3 : 0);
-        }
-        *px = pxs[pass];
-        if (total <= room)
-            break;
-    }
-    x = p->x + p->w - 20 - total;
-    for (i = 0; i < n; i++) {
-        out[i].x = x;
-        out[i].y = cy - 13;
-        out[i].w = w[i];
-        out[i].h = 26;
-        x += w[i] + 3;
-    }
-    return names;
-}
-
-/* The six choices of the sleep timer (cy = the middle of the row) */
-static const char *const *ui_q_chips(const SDL_Rect *p, int cy, SDL_Rect out[6])
-{
-    int px;
-
-    return ui_q_chips_for(p, cy, ui_text_width("Sleep timer", 18), 6, ui_chip_full, ui_chip_short, out, &px);
-}
-
 /* The list position where the dragged item would land */
 static int ui_q_drop(int wh, const SDL_Rect *p)
 {
@@ -6103,14 +6024,6 @@ static void ui_sleep_choose(int sel)
         q_sleep_end = av_gettime_relative() + (int64_t)minutes[sel] * 60 * 1000000;
         ui_sleep_sel = sel;
     }
-}
-
-/* The choice that is on now (0 to 5) */
-static int ui_sleep_current(void)
-{
-    if (q_sleep_end)
-        return av_clip(ui_sleep_sel, 2, 5);
-    return q_sleep_item ? 1 : 0;
 }
 
 /* v46: the sleep timer for any number of minutes (0 = off); the sound fades out over its last 20 seconds, as for the others */
@@ -17094,6 +17007,8 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
             int dbl = ui_pk_click_row == ui_pk_hrow && now - ui_pk_click_t < 450000;
             UiPkEnt *e = ui_pk_ent(ui_pk_hrow);
 
+            int ui_pk_old_cur = ui_pk_cur, old_touched = ui_pk_touched;    /* v53: the row that was chosen before this click */
+
             ui_pk_click_row = ui_pk_hrow;
             ui_pk_click_t = now;
             ui_pk_cur = ui_pk_hrow;
@@ -17102,6 +17017,9 @@ static int ui_pk_mouse(VideoState *is, SDL_Event *ev)
                 ui_pk_click_row = -2;
                 ui_pk_activate(is);
             } else if ((ui_pk_mode == 2 || (ui_pk_mode == 0 && (SDL_GetModState() & KMOD_CTRL))) && e && !e->dir) {
+                if (ui_pk_mode == 0 && old_touched && ui_pk_old_cur != ui_pk_hrow && ui_pk_old_cur >= 0 && ui_pk_old_cur < ui_pk_nrw &&
+                    ui_pk_ticked(NULL) == 0 && ui_pk_ent(ui_pk_old_cur) && !ui_pk_ent(ui_pk_old_cur)->dir)
+                    ui_pk_tick_row(ui_pk_old_cur);      /* the file clicked first counts as selected, like in Files */
                 ui_pk_tick_row(ui_pk_hrow);     /* Ctrl+click ticks a file (a plain click in Add to Queue ticks it) */
             } else if (ui_pk_mode == 2 && e) {  /* a folder is entered with one click: there is nothing to tick on it */
                 ui_pk_click_row = -2;

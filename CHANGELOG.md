@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v53
+- Ctrl+click in the file picker keeps the file you clicked before, so click one file and Ctrl+click two more and all three play in that order
+- The 11 old compiler warnings (unused functions and variables) are gone
+
 ## v52
 - Open Media is one menu choice: the picker shows files and folders, with no separate Open File or Open Folder
 - A folder has Open folder (go into it) and Play folder; a file has Play file, with a play triangle on the button
