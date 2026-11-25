@@ -779,7 +779,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +1970,9524 @@
+@@ -1341,19 +1970,9528 @@
      return 0;
  }
  
@@ -1069,7 +1069,7 @@
 +    /* Track: faint white pill */
 +    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 45);
 +    ui_pill(t);
-+
+ 
 +    /* Progress / volume: soft muted blue (the numbers are red, green, blue, opacity) */
 +    SDL_SetRenderDrawColor(renderer, cfg_bar_r, cfg_bar_g, cfg_bar_b, 200);
 +    ui_pill(&fill);
@@ -2645,6 +2645,7 @@
 +enum { UI_IC_OPEN, UI_IC_FOLDER, UI_IC_FILE, UI_IC_QUEUE, UI_IC_INFO, UI_IC_GEAR, UI_IC_POWER, UI_IC_TRASH, UI_IC_MOON,
 +       UI_IC_FADE, UI_IC_SKIP, UI_IC_VOLUME, UI_IC_EYE, UI_IC_EXPAND, UI_IC_DROP, UI_IC_BOOKMARK, UI_IC_EXIT, UI_IC_MOUSE,
 +       UI_IC_CHEV_R, UI_IC_CHEV_D, UI_IC_CHEV_U, UI_IC_X,
++       UI_IC_CHEV_L,
 +       UI_IC_N };
 +#define UI_IC_MAXS 80
 +typedef struct { float a, b, c, d, e, f; int arc; } UiStroke;       /* a line (a,b to c,d) or an arc (centre a,b, radius c, angles e to f) */
@@ -2766,6 +2767,9 @@
 +    }
 +    case UI_IC_CHEV_R:                          /* v45: a soft curve, no corner: an arc with round ends */
 +        ic_arc(7.5f, 12, 7, -60, 60);
++        break;
++    case UI_IC_CHEV_L:                          /* v49: the mirror of the right one (Back in the picker) */
++        ic_arc(16.5f, 12, 7, 120, 240);
 +        break;
 +    case UI_IC_CHEV_D:
 +        ic_arc(12, 7.5f, 7, 30, 150);
@@ -3055,8 +3059,9 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -3922,7 +3927,7 @@
 +{
 +    return r == 1 ? 0.5 : r == 0 ? 1.0 : 0.0;
 +}
- 
++
 +static double ui_sl_hi(int r)
 +{
 +    return r == 0 ? 16.0 : r == 1 ? 30.0 : r == 7 ? 10.0 : r == 8 ? 120.0 : 100.0;
@@ -4308,9 +4313,8 @@
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -10310,7 +10314,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +11590,14 @@
+@@ -1456,9 +11594,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -10325,7 +10329,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +11633,11 @@
+@@ -1494,9 +11637,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -10340,7 +10344,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +11898,30 @@
+@@ -1757,6 +11902,30 @@
      return 0;
  }
  
@@ -10371,7 +10375,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +11937,11 @@
+@@ -1772,6 +11941,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -10383,7 +10387,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +12211,11 @@
+@@ -2041,6 +12215,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -10395,7 +10399,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +12605,7 @@
+@@ -2430,7 +12609,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -10404,7 +10408,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +12626,24 @@
+@@ -2451,12 +12630,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -10431,7 +10435,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +12856,8 @@
+@@ -2669,7 +12860,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -10441,7 +10445,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +12922,13 @@
+@@ -2734,6 +12926,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -10455,7 +10459,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +13044,7 @@
+@@ -2849,6 +13048,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -10463,7 +10467,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +13142,10 @@
+@@ -2946,6 +13146,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -10474,7 +10478,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +13165,19 @@
+@@ -2965,6 +13169,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -10494,7 +10498,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +13213,13 @@
+@@ -3000,8 +13217,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -10510,7 +10514,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3057,6 +13275,7 @@
+@@ -3057,6 +13279,7 @@
      if (ret != 0) {
          SDL_Event event;
  
@@ -10518,7 +10522,7 @@
          event.type = FF_QUIT_EVENT;
          event.user.data1 = is;
          SDL_PushEvent(&event);
-@@ -3111,8 +13330,10 @@
+@@ -3111,8 +13334,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -10530,7 +10534,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +13345,7 @@
+@@ -3124,7 +13349,7 @@
      return is;
  }
  
@@ -10539,7 +10543,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +13424,83 @@
+@@ -3203,13 +13428,83 @@
  }
  
  
@@ -10595,8 +10599,9 @@
 +        ui_pip_left_fs();
 +    if (!is_full_screen && ui_maxed)
 +        ui_max_set(1);
-+}
-+
+ }
+ 
+-static void toggle_audio_display(VideoState *is)
 +/* A double tap in the picture: window or filled window -> complete full screen (no bars at all) -> the filled window,
 +   with the title bar and the panel of the window manager, where the corners can be dragged -> complete full screen... */
 +static void ui_fs_cycle(VideoState *is)
@@ -10617,14 +10622,13 @@
 +        is_full_screen = 1;
 +        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 +    }
- }
- 
--static void toggle_audio_display(VideoState *is)
++}
++
 +static av_unused void toggle_audio_display(VideoState *is)
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13512,1703 @@
+@@ -3221,24 +13516,2020 @@
      }
  }
  
@@ -11153,10 +11157,13 @@
 +     Keys:  type to filter the list, Up/Down/PageUp/PageDown/Home/End, Enter (opens the row, or adds what is ticked), Right enters
 +            a folder, Left or Backspace (with nothing typed) goes up, Space ticks, Ctrl+A ticks all, Tab shows all files, Ctrl+H shows
 +            hidden ones, Esc clears the filter, then closes.
++     v49:   one top row (Back, Forward, Up, title, path, Name / Modified / Size, close); Alt+Left and Alt+Right (or the side
++            buttons of a mouse) are Back and Forward; the main button follows the row: Open for a folder, Play for a file;
++            the foot counts the items of the folder, or gives the size of the chosen file.
 +   ================================================================================================================================ */
 +#define UI_PK_ROW  34
 +#define UI_PK_HEAD 54
-+#define UI_PK_BAR  44
++#define UI_PK_BAR  52
 +#define UI_PK_FOOT 62
 +#define UI_PK_SIDE 190
 +
@@ -11173,8 +11180,8 @@
 +} UiPkPlace;
 +
 +typedef struct {
-+    SDL_Rect p, side, bar, list, up, cancel, ok, extra, all, hid, sort[3];
-+    int side_on, tog, sort_on;                           /* tog: there is room in the foot for All files and Hidden */
++    SDL_Rect p, side, bar, list, nav[3], path, xb, ok, extra, sort[3];     /* v49: nav = Back, Forward, Up; xb = close */
++    int side_on, tog, sort_on, title_on, title_x;       /* tog: there is room in the foot for All files and Hidden */
 +} UiPkLay;
 +
 +static UiPkEnt *ui_pk_e = NULL;
@@ -11194,6 +11201,17 @@
 +static int ui_pk_ncrumb = 0;
 +static int64_t ui_pk_click_t = 0, ui_pk_nav_t = 0;      /* nav_t: when a folder was last read (a click just after it is the second of a double click) */
 +static int ui_pk_click_row = -2;
++
++/* v49: where the person has been (Back, Forward), what was last counted, where the toggles were drawn, a dimmed button */
++#define UI_PK_HIST 48
++#define UI_PK_CLOCK24 0                         /* 1 = clock times like 17:05, 0 = like 5:05 pm */
++static char ui_pk_hist[UI_PK_HIST][PATH_MAX];
++static int ui_pk_hn = 0, ui_pk_hi = -1;         /* how many folders are kept, and which of them is open */
++static int ui_pk_gen = 0;                       /* counts the folder reads, so a count made for an older read is not trusted */
++static char ui_pk_cnt_path[PATH_MAX + 300];
++static int ui_pk_cnt_n = 0, ui_pk_cnt_gen = -1;
++static SDL_Rect ui_pk_hit_all, ui_pk_hit_hid;   /* where All files and Hidden were drawn (empty when there is no room) */
++static int ui_pk_btn_dim = 0;                   /* 1 while a button is drawn that cannot be used yet */
 +
 +static int ui_pk_cm_open;                        /* v45 (the row menu, below) */
 +
@@ -11353,6 +11371,7 @@
 +    free(ui_pk_sel);
 +    ui_pk_vis = malloc(sizeof(int) * (ui_pk_n + 1));
 +    ui_pk_sel = calloc(ui_pk_n + 1, 1);
++    ui_pk_gen++;
 +    ui_pk_nav_t = av_gettime_relative();
 +    snprintf(ui_pk_dir, sizeof(ui_pk_dir), "%s", real);
 +    snprintf(ui_pk_last, sizeof(ui_pk_last), "%s", real);
@@ -11361,6 +11380,153 @@
 +    ui_pk_touched = 0;
 +    ui_pk_refilter();
 +    return 1;
++}
++
++/* v49: Back and Forward remember the folders that were open, in the order they were visited */
++static void ui_pk_hist_push(const char *dir)
++{
++    int at, i;
++
++    if (ui_pk_hi >= 0 && !strcmp(ui_pk_hist[ui_pk_hi], dir))
++        return;
++    at = ui_pk_hi + 1;                          /* going somewhere new drops what was ahead */
++    if (at >= UI_PK_HIST) {                     /* full: the oldest one goes */
++        for (i = 1; i < UI_PK_HIST; i++)
++            memcpy(ui_pk_hist[i - 1], ui_pk_hist[i], PATH_MAX);
++        at = UI_PK_HIST - 1;
++    }
++    snprintf(ui_pk_hist[at], PATH_MAX, "%s", dir);
++    ui_pk_hi = at;
++    ui_pk_hn = at + 1;
++}
++
++/* d = -1: Back, d = 1: Forward. A folder that cannot be read any more is not entered. */
++static void ui_pk_hist_step(int d)
++{
++    char to[PATH_MAX];
++    int at = ui_pk_hi + d;
++
++    if (at < 0 || at >= ui_pk_hn)
++        return;
++    snprintf(to, sizeof(to), "%s", ui_pk_hist[at]);
++    if (ui_pk_load(to))
++        ui_pk_hi = at;
++}
++
++/* How many rows the folder would show if it were opened (the same rules as the list: hidden ones, files that can be played).
++   -1 if it cannot be read. */
++static int ui_pk_count_in(const char *dir)
++{
++    char full[PATH_MAX + 300];
++    struct dirent *de;
++    DIR *d = opendir(dir);
++    int n = 0;
++
++    if (!d)
++        return -1;
++    while ((de = readdir(d))) {
++        struct stat st;
++
++        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
++            continue;
++        if (de->d_name[0] == '.' && !ui_pk_hidden)
++            continue;
++        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
++        if (stat(full, &st) != 0)
++            continue;
++        if (S_ISDIR(st.st_mode))
++            n++;
++        else if (S_ISREG(st.st_mode) && ui_pk_mode != 1 && (ui_pk_all || ui_pk_has_ext(de->d_name)))
++            n++;
++    }
++    closedir(d);
++    return n;
++}
++
++/* The count is made once per folder and per read, not on every frame */
++static int ui_pk_count_cached(const char *dir)
++{
++    if (ui_pk_cnt_gen != ui_pk_gen || strcmp(dir, ui_pk_cnt_path)) {
++        ui_pk_cnt_n = ui_pk_count_in(dir);
++        ui_pk_cnt_gen = ui_pk_gen;
++        snprintf(ui_pk_cnt_path, sizeof(ui_pk_cnt_path), "%s", dir);
++    }
++    return ui_pk_cnt_n;
++}
++
++static void ui_pk_fmt_size(double sz, char *out, size_t n)
++{
++    if (sz < 1000.0)
++        snprintf(out, n, "%d bytes", (int)sz);
++    else if (sz < 1e6)
++        snprintf(out, n, "%.1f kB", sz / 1e3);
++    else if (sz < 1e9)
++        snprintf(out, n, "%.1f MB", sz / 1e6);
++    else
++        snprintf(out, n, "%.1f GB", sz / 1e9);
++}
++
++static void ui_pk_clock(const struct tm *tm, char *out, size_t n)
++{
++#if UI_PK_CLOCK24
++    snprintf(out, n, "%d:%02d", tm->tm_hour, tm->tm_min);
++#else
++    int h = tm->tm_hour % 12;
++
++    snprintf(out, n, "%d:%02d %s", h ? h : 12, tm->tm_min, tm->tm_hour < 12 ? "am" : "pm");
++#endif
++}
++
++/* The number of the calendar day (so two times can be compared by the day they fall on, not by 24 hour spans) */
++static long ui_pk_days(const struct tm *tm)
++{
++    long y = tm->tm_year + 1900L, m = tm->tm_mon + 1, d = tm->tm_mday, era, yoe, doy, doe;
++
++    y -= m <= 2;
++    era = (y >= 0 ? y : y - 399) / 400;
++    yoe = y - era * 400;
++    doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++    return era * 146097 + doe;
++}
++
++/* "Modified", the way Files tells it: just now, 3 minutes ago, 2 hours ago, Today at 12:17 pm, Yesterday at 4:19 pm,
++   Monday at 8:00 pm (2 to 6 days ago), 1 week ago (7 to 13 days), else Nov 12, 2026. A time in the future is shown as a date. */
++static void ui_pk_when(time_t t, time_t now, char *out, size_t n)
++{
++    struct tm tm, tn;
++    char clk[24];
++    long age = (long)(now - t), dd;
++
++    localtime_r(&t, &tm);
++    localtime_r(&now, &tn);
++    dd = ui_pk_days(&tn) - ui_pk_days(&tm);
++    ui_pk_clock(&tm, clk, sizeof(clk));
++    if (age < -60 || dd < 0 || dd >= 14) {
++        strftime(out, n, "%b %-d, %Y", &tm);
++    } else if (age < 60) {
++        snprintf(out, n, "Just now");
++    } else if (age < 3600) {
++        snprintf(out, n, "%ld minute%s ago", age / 60, age / 60 == 1 ? "" : "s");
++    } else if (age < 6 * 3600) {
++        snprintf(out, n, "%ld hour%s ago", age / 3600, age / 3600 == 1 ? "" : "s");
++    } else if (dd == 0) {
++        snprintf(out, n, "Today at %s", clk);
++    } else if (dd == 1) {
++        snprintf(out, n, "Yesterday at %s", clk);
++    } else if (dd < 7) {
++        char wd[32];
++
++        strftime(wd, sizeof(wd), "%A", &tm);
++        snprintf(out, n, "%s at %s", wd, clk);
++    } else {
++        snprintf(out, n, "1 week ago");
++    }
++}
++
++static const char *ui_pk_title(void)
++{
++    return ui_pk_mode == 2 ? "Add to Queue" : "Open Media";
 +}
 +
 +static void ui_pk_path_of(int e, char *out, size_t size)
@@ -11384,6 +11550,7 @@
 +        *slash = 0;
 +    if (!ui_pk_load(parent))
 +        return;
++    ui_pk_hist_push(ui_pk_dir);
 +    for (i = 0; i < ui_pk_nv; i++)              /* the cursor goes to the folder that was left */
 +        if (!strcmp(ui_pk_e[ui_pk_vis[i]].name, base)) {
 +            ui_pk_cur = i;
@@ -11395,7 +11562,9 @@
 +
 +static void ui_pk_go(const char *dir)
 +{
-+    if (!ui_pk_load(dir))
++    if (ui_pk_load(dir))
++        ui_pk_hist_push(ui_pk_dir);
++    else
 +        fprintf(stderr, "ffplay-custom: cannot read %s\n", dir);
 +}
 +
@@ -11445,58 +11614,70 @@
 +
 +static void ui_pk_layout(int ww, int wh, UiPkLay *L)
 +{
++    static const char * const nm[3] = { "Name", "Modified", "Size" };
++    int k, x, xr, right;
++
 +    L->p.w = FFMIN(av_clip(ww - 40, 360, 940), ww - 8);
 +    L->p.h = FFMIN(av_clip(wh - 40, 280, 640), wh - 8);
 +    L->p.x = (ww - L->p.w) / 2;
 +    L->p.y = FFMAX((wh - L->p.h) / 2, 4);
 +    L->side_on = L->p.w >= 640;
-+    L->side.x = L->p.x;
-+    L->side.y = L->p.y + UI_PK_HEAD;
-+    L->side.w = L->side_on ? UI_PK_SIDE : 0;
-+    L->side.h = L->p.h - UI_PK_HEAD - UI_PK_FOOT;
-+    L->bar.x = L->p.x + L->side.w;
-+    L->bar.y = L->p.y + UI_PK_HEAD;
-+    L->bar.w = L->p.w - L->side.w;
++    L->bar.x = L->p.x;                          /* v49: one top row over the whole panel */
++    L->bar.y = L->p.y;
++    L->bar.w = L->p.w;
 +    L->bar.h = UI_PK_BAR;
-+    L->list.x = L->bar.x;
-+    L->list.y = L->bar.y + UI_PK_BAR;
-+    L->list.w = L->bar.w;
-+    L->list.h = L->p.h - UI_PK_HEAD - UI_PK_BAR - UI_PK_FOOT;
-+    L->up.x = L->bar.x + 12;
-+    L->up.y = L->bar.y + 6;
-+    L->up.w = 56;
-+    L->up.h = 32;
-+    L->ok.w = 132;
-+    L->ok.h = 36;
-+    L->ok.x = L->p.x + L->p.w - 20 - L->ok.w;
-+    L->ok.y = L->p.y + L->p.h - UI_PK_FOOT + 13;
-+    L->cancel = L->ok;
-+    L->cancel.w = 96;
-+    L->cancel.x = L->ok.x - 10 - L->cancel.w;
-+    L->extra = L->ok;
-+    L->extra.w = L->p.w >= 740 ? 150 : 96;
-+    L->tog = L->p.w >= (ui_pk_mode == 2 ? 740 : 560);
-+    L->extra.x = L->cancel.x - 10 - L->extra.w;
-+    L->all.x = L->p.x + 20;
-+    L->all.y = L->ok.y;
-+    L->all.w = 120;
-+    L->all.h = 36;
-+    L->hid = L->all;
-+    L->hid.x = L->all.x + L->all.w + 8;
-+    L->hid.w = 100;
-+    {                                           /* v45: Name, Date, Size at the right end of the path bar */
-+        static const char * const nm[3] = { "Name", "Date", "Size" };
-+        int k, xr = L->bar.x + L->bar.w - 14;
++    L->side.x = L->p.x;
++    L->side.y = L->p.y + UI_PK_BAR;
++    L->side.w = L->side_on ? UI_PK_SIDE : 0;
++    L->side.h = L->p.h - UI_PK_BAR - UI_PK_FOOT;
++    L->list.x = L->p.x + L->side.w;
++    L->list.y = L->p.y + UI_PK_BAR;
++    L->list.w = L->p.w - L->side.w;
++    L->list.h = L->p.h - UI_PK_BAR - UI_PK_FOOT;
 +
-+        L->sort_on = L->bar.w >= 500;
++    /* the top row: Back, Forward, Up, the title, the path, Name / Modified / Size, close */
++    x = L->p.x + 12;
++    for (k = 0; k < 3; k++) {
++        L->nav[k].x = x;
++        L->nav[k].y = L->bar.y + 10;
++        L->nav[k].w = 32;
++        L->nav[k].h = 32;
++        x += 34;
++    }
++    L->title_on = L->p.w >= 560;
++    L->title_x = x + 12;
++    x = L->title_on ? L->title_x + ui_text_width(ui_pk_title(), 20) + 18 : x + 8;
++    L->xb.w = 32;
++    L->xb.h = 32;
++    L->xb.x = L->p.x + L->p.w - 12 - L->xb.w;
++    L->xb.y = L->bar.y + 10;
++    right = L->xb.x - 10;
++    L->sort_on = L->p.w >= 780;
++    if (L->sort_on) {
++        xr = L->xb.x - 6;
 +        for (k = 2; k >= 0; k--) {
 +            L->sort[k].w = ui_text_width(nm[k], 15) + (k == ui_pk_sortk ? 40 : 24);
 +            L->sort[k].h = 30;
-+            L->sort[k].y = L->bar.y + 7;
++            L->sort[k].y = L->bar.y + 11;
 +            L->sort[k].x = xr - L->sort[k].w;
 +            xr -= L->sort[k].w + 2;
 +        }
++        right = L->sort[0].x - 10;
 +    }
++    L->path.x = x;
++    L->path.y = L->bar.y + 9;
++    L->path.h = 34;
++    L->path.w = FFMAX(right - x, 60);
++
++    /* the foot: the buttons at the right end (Cancel is gone: the x and Esc close the picker) */
++    L->ok.h = 36;
++    L->ok.y = L->p.y + L->p.h - UI_PK_FOOT + 13;
++    L->ok.w = ui_pk_mode == 1 ? 110 : 132;
++    L->ok.x = L->p.x + L->p.w - 20 - L->ok.w;
++    L->extra = L->ok;
++    L->extra.w = ui_pk_mode == 2 ? (L->p.w >= 740 ? 150 : 96) : 110;
++    L->extra.x = L->ok.x - 10 - L->extra.w;
++    L->tog = L->p.w >= (ui_pk_mode == 2 ? 860 : ui_pk_mode == 1 ? 720 : 680);
 +}
 +
 +static int ui_pk_ticked(void)
@@ -11545,6 +11726,84 @@
 +    }
 +    if (sent)
 +        ui_pk_close(is);
++}
++
++/* v49: the row the person has chosen (-1 if none yet) */
++static int ui_pk_chosen(void)
++{
++    return ui_pk_touched && ui_pk_nv > 0 ? ui_pk_vis[ui_pk_cur] : -1;
++}
++
++/* What the main button does in Open File: 0 nothing yet, 1 Open (go into the chosen folder), 2 Play (play the chosen file).
++   In Open Folder and Add to Queue it always works (Play the chosen or open folder; Add). */
++static int ui_pk_okmode(void)
++{
++    int e = ui_pk_chosen();
++
++    if (ui_pk_mode != 0)
++        return 2;
++    if (e < 0)
++        return 0;
++    return ui_pk_e[e].dir ? 1 : 2;
++}
++
++/* Open: go into the chosen folder */
++static void ui_pk_enter_sel(void)
++{
++    char path[PATH_MAX + 300];
++    int e = ui_pk_chosen();
++
++    if (e < 0 || !ui_pk_e[e].dir)
++        return;
++    ui_pk_path_of(e, path, sizeof(path));
++    ui_pk_go(path);
++}
++
++/* The line in the foot, in two pieces: a name (may be empty) and what follows it. Returns 1 for a message (drawn in colour). */
++static int ui_pk_status(char *lead, size_t ls, char *tail, size_t ts)
++{
++    int nt = ui_pk_mode == 2 ? ui_pk_ticked() : 0, e = ui_pk_chosen(), i;
++    char path[PATH_MAX + 300], sz[32];
++
++    lead[0] = tail[0] = 0;
++    if (ui_pk_note[0] && av_gettime_relative() < ui_pk_note_until) {
++        snprintf(tail, ts, "%s", ui_pk_note);
++        return 1;
++    }
++    if (ui_pk_filter[0]) {
++        snprintf(tail, ts, "Filter: %.100s  -  %d of %d items", ui_pk_filter, ui_pk_nv, ui_pk_n);
++        return 1;
++    }
++    if (nt > 1) {
++        snprintf(tail, ts, "%d files selected", nt);
++        return 0;
++    }
++    if (nt == 1) {
++        for (i = 0; i < ui_pk_n; i++)
++            if (ui_pk_sel[i]) {
++                e = i;
++                break;
++            }
++    }
++    if (e >= 0 && e < ui_pk_n) {
++        snprintf(lead, ls, "%.255s", ui_pk_e[e].name);
++        if (ui_pk_e[e].dir) {                   /* a folder: how many items are in it, not how big it is */
++            int c;
++
++            ui_pk_path_of(e, path, sizeof(path));
++            c = ui_pk_count_cached(path);
++            if (c < 0)
++                snprintf(tail, ts, " selected");
++            else
++                snprintf(tail, ts, " selected (%d item%s)", c, c == 1 ? "" : "s");
++        } else {
++            ui_pk_fmt_size((double)ui_pk_e[e].size, sz, sizeof(sz));
++            snprintf(tail, ts, " selected (%s)", sz);
++        }
++        return 0;
++    }
++    snprintf(tail, ts, "%d item%s", ui_pk_nv, ui_pk_nv == 1 ? "" : "s");
++    return 0;
 +}
 +
 +/* Enter or Enter-like: a folder is entered, a file is opened (or, with ticks, they are added) */
@@ -11611,6 +11870,9 @@
 +        ui_pick_start_zenity(item);             /* nothing can be read: the system dialog is the way out */
 +        return;
 +    }
++    ui_pk_hn = 0;                               /* v49: Back and Forward start from here */
++    ui_pk_hi = -1;
++    ui_pk_hist_push(ui_pk_dir);
 +    ui_menu_open = 0;
 +    ui_q_open = 0;
 +    ui_info_open = 0;
@@ -11631,11 +11893,12 @@
 +{
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 +    if (primary)
-+        SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r, 0, 255), av_clip(cfg_bar_g, 0, 255), av_clip(cfg_bar_b, 0, 255), hot ? 255 : 215);
++        SDL_SetRenderDrawColor(renderer, av_clip(cfg_bar_r, 0, 255), av_clip(cfg_bar_g, 0, 255), av_clip(cfg_bar_b, 0, 255),
++                               ui_pk_btn_dim ? 70 : hot ? 255 : 215);
 +    else
-+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, hot ? 60 : 30);
++        SDL_SetRenderDrawColor(renderer, 255, 255, 255, ui_pk_btn_dim ? 14 : hot ? 60 : 30);
 +    ui_pill(r);
-+    ui_label_c(r->x + r->w / 2, r->y + r->h / 2, label, 16, 245, 245, 245, 255);
++    ui_label_c(r->x + r->w / 2, r->y + r->h / 2, label, 16, 245, 245, 245, ui_pk_btn_dim ? 120 : 255);
 +}
 +
 +/* v45: the menu of a row (right click). A file: Play now, Add to queue. A folder: Open folder, Play folder, Add folder to queue. */
@@ -11742,10 +12005,9 @@
 +{
 +    UiPkLay L;
 +    SDL_Rect r, clip;
-+    char buf[PATH_MAX + 64], tmp[PATH_MAX + 64];
-+    const char *title = ui_pk_mode == 1 ? "Open Folder" : ui_pk_mode == 2 ? "Add to Queue" : "Open File";
-+    const char *okname = ui_pk_mode == 1 ? "Open folder" : ui_pk_mode == 2 ? "Add" : "Open";
-+    int ww, wh, i, first, last, mx = 0, my = 0, nt, x, cy, cols_date, cols_size;
++    char tmp[PATH_MAX + 64], lead[320], tail[220];
++    int ww, wh, i, first, last, mx = 0, my = 0, x, cy, cyf, cols_date, cols_size, om, msg, tw;
++    time_t now = time(NULL);
 +
 +    if (!ui_pk_open)
 +        return;
@@ -11774,60 +12036,35 @@
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 +    SDL_GetMouseState(&mx, &my);
 +
-+    /* header */
-+    ui_label(L.p.x + 26, L.p.y + UI_PK_HEAD / 2 + 2, title, 24, 245, 245, 245, 255);
-+    snprintf(buf, sizeof(buf), "%s", ui_pk_filter[0] ? ui_pk_filter : "");
-+    if (ui_pk_filter[0]) {
-+        int fw;
++    /* the top row: Back, Forward, Up, the title, the path, Name / Modified / Size, close */
++    cy = L.bar.y + L.bar.h / 2;
++    {
++        static const int ic[3] = { UI_IC_CHEV_L, UI_IC_CHEV_R, UI_IC_CHEV_U };
++        int can[3];
 +
-+        snprintf(tmp, sizeof(tmp), "Filter: %s", buf);
-+        ui_fit_text(tmp, 16, L.p.w / 2 - 40);
-+        fw = ui_text_width(tmp, 16);
-+        ui_label(L.p.x + L.p.w - 26 - fw, L.p.y + UI_PK_HEAD / 2 + 2, tmp, 16, av_clip(cfg_bar_r + 60, 0, 255),
-+                 av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255), 255);
-+    } else {
-+        const char *h = av_gettime_relative() < ui_pk_note_until ? ui_pk_note : "Type to filter";
-+        int fw = ui_text_width(h, 15);
-+
-+        ui_label(L.p.x + L.p.w - 26 - fw, L.p.y + UI_PK_HEAD / 2 + 2, h, 15, 170, 170, 170, 255);
-+    }
-+
-+    /* the places */
-+    if (L.side_on) {
-+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 55);
-+        SDL_RenderFillRect(renderer, &L.side);
-+        for (i = 0; i < ui_pk_npl; i++) {
-+            int on = !strcmp(ui_pk_pl[i].path, ui_pk_dir);
-+
-+            r.x = L.side.x + 8;
-+            r.y = L.side.y + 8 + i * 36;
-+            r.w = L.side.w - 16;
-+            r.h = 34;
-+            if (r.y + r.h > L.side.y + L.side.h)
-+                break;
-+            if (on || i == ui_pk_hplace) {
-+                SDL_SetRenderDrawColor(renderer, on ? av_clip(cfg_bar_r, 0, 255) : 255, on ? av_clip(cfg_bar_g, 0, 255) : 255,
-+                                       on ? av_clip(cfg_bar_b, 0, 255) : 255, on ? 90 : 28);
-+                ui_pill(&r);
++        can[0] = ui_pk_hi > 0;
++        can[1] = ui_pk_hi + 1 < ui_pk_hn;
++        can[2] = strcmp(ui_pk_dir, "/") != 0;
++        for (i = 0; i < 3; i++) {
++            if (can[i] && ui_pk_hbtn == 20 + i) {
++                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 34);
++                ui_pill(&L.nav[i]);
 +            }
-+            ui_icon(UI_IC_FOLDER, r.x + 20, r.y + r.h / 2, 18, 245, 245, 245, on ? 255 : 200);
-+            snprintf(tmp, sizeof(tmp), "%s", ui_pk_pl[i].name);
-+            ui_fit_text(tmp, 16, r.w - 52);
-+            ui_label(r.x + 38, r.y + r.h / 2, tmp, 16, 245, 245, 245, on ? 255 : 215);
++            ui_icon(ic[i], L.nav[i].x + L.nav[i].w / 2, cy, 18, 245, 245, 245, can[i] ? 235 : 70);
 +        }
-+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
-+        SDL_RenderDrawLine(renderer, L.side.x + L.side.w, L.side.y, L.side.x + L.side.w, L.side.y + L.side.h);
 +    }
++    if (L.title_on)
++        ui_label(L.title_x, cy, ui_pk_title(), 20, 245, 245, 245, 255);
 +
-+    /* the path: Up, then the folders from the left, the last ones if they do not all fit */
-+    ui_pk_button(&L.up, "Up", ui_pk_hbtn == 0 && strcmp(ui_pk_dir, "/") != 0, 0);
++    /* the path, in a pill: the folders from the left, the last ones if they do not all fit */
++    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 22);
++    ui_pill(&L.path);
 +    {
 +        const char *home = getenv("HOME");
 +        int hl = home ? (int)strlen(home) : 0, starts_home = hl > 1 && !strncmp(ui_pk_dir, home, hl) &&
 +                 (ui_pk_dir[hl] == '/' || !ui_pk_dir[hl]);
 +        struct { char label[PATH_MAX]; int upto; } seg[64];
-+        int ns = 0, pos, sw, total, from = 0, avail = L.bar.w - L.up.w - 12 - 32 - (L.sort_on ? L.bar.x + L.bar.w - L.sort[0].x : 0),
-+            len = (int)strlen(ui_pk_dir);
++        int ns = 0, pos, sw, total, from = 0, avail = L.path.w - 32, len = (int)strlen(ui_pk_dir);
 +        const int gap = 28;
 +
 +        if (starts_home) {
@@ -11858,8 +12095,7 @@
 +            total += ui_text_width(seg[i].label, 16) + gap;
 +        for (from = 0; from < ns - 1 && total > avail; from++)
 +            total -= ui_text_width(seg[from].label, 16) + gap;
-+        x = L.up.x + L.up.w + 18;
-+        cy = L.bar.y + L.bar.h / 2;
++        x = L.path.x + 16;
 +        ui_pk_ncrumb = 0;
 +        if (from > 0) {
 +            ui_label(x, cy, "...", 16, 170, 170, 170, 255);
@@ -11869,13 +12105,13 @@
 +            int last_seg = i == ns - 1;
 +
 +            snprintf(tmp, sizeof(tmp), "%s", seg[i].label);
-+            ui_fit_text(tmp, 16, FFMAX(avail - (x - L.up.x - L.up.w - 18), 60));
++            ui_fit_text(tmp, 16, FFMAX(avail - (x - L.path.x - 16), 60));
 +            sw = ui_text_width(tmp, 16);
 +            if (ui_pk_ncrumb < 24) {
 +                ui_pk_crumb[ui_pk_ncrumb].r.x = x - 4;
-+                ui_pk_crumb[ui_pk_ncrumb].r.y = L.bar.y + 4;
++                ui_pk_crumb[ui_pk_ncrumb].r.y = L.path.y + 2;
 +                ui_pk_crumb[ui_pk_ncrumb].r.w = sw + 8;
-+                ui_pk_crumb[ui_pk_ncrumb].r.h = L.bar.h - 8;
++                ui_pk_crumb[ui_pk_ncrumb].r.h = L.path.h - 4;
 +                ui_pk_crumb[ui_pk_ncrumb].upto = seg[i].upto;
 +                ui_pk_ncrumb++;
 +            }
@@ -11888,7 +12124,7 @@
 +        }
 +    }
 +    if (L.sort_on) {
-+        static const char * const nm[3] = { "Name", "Date", "Size" };
++        static const char * const nm[3] = { "Name", "Modified", "Size" };
 +
 +        for (i = 0; i < 3; i++) {
 +            int on = i == ui_pk_sortk, hot = ui_pk_hbtn == 10 + i;
@@ -11904,13 +12140,45 @@
 +                        av_clip(cfg_bar_r + 70, 0, 255), av_clip(cfg_bar_g + 70, 0, 255), av_clip(cfg_bar_b + 70, 0, 255), 255);
 +        }
 +    }
++    if (ui_pk_hbtn == 4) {
++        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 40);
++        ui_pill(&L.xb);
++    }
++    ui_icon(UI_IC_X, L.xb.x + L.xb.w / 2, cy, 16, 245, 245, 245, ui_pk_hbtn == 4 ? 255 : 200);
 +    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
-+    SDL_RenderDrawLine(renderer, L.list.x, L.list.y, L.list.x + L.list.w, L.list.y);
++    SDL_RenderDrawLine(renderer, L.p.x + 12, L.list.y, L.p.x + L.p.w - 12, L.list.y);
++
++    /* the places */
++    if (L.side_on) {
++        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 55);
++        SDL_RenderFillRect(renderer, &L.side);
++        for (i = 0; i < ui_pk_npl; i++) {
++            int on = !strcmp(ui_pk_pl[i].path, ui_pk_dir);
++
++            r.x = L.side.x + 8;
++            r.y = L.side.y + 8 + i * 36;
++            r.w = L.side.w - 16;
++            r.h = 34;
++            if (r.y + r.h > L.side.y + L.side.h)
++                break;
++            if (on || i == ui_pk_hplace) {
++                SDL_SetRenderDrawColor(renderer, on ? av_clip(cfg_bar_r, 0, 255) : 255, on ? av_clip(cfg_bar_g, 0, 255) : 255,
++                                       on ? av_clip(cfg_bar_b, 0, 255) : 255, on ? 90 : 28);
++                ui_pill(&r);
++            }
++            ui_icon(UI_IC_FOLDER, r.x + 20, r.y + r.h / 2, 18, 245, 245, 245, on ? 255 : 200);
++            snprintf(tmp, sizeof(tmp), "%s", ui_pk_pl[i].name);
++            ui_fit_text(tmp, 16, r.w - 52);
++            ui_label(r.x + 38, r.y + r.h / 2, tmp, 16, 245, 245, 245, on ? 255 : 215);
++        }
++        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
++        SDL_RenderDrawLine(renderer, L.side.x + L.side.w, L.side.y, L.side.x + L.side.w, L.side.y + L.side.h);
++    }
 +
 +    /* the list */
 +    clip = L.list;
 +    SDL_RenderSetClipRect(renderer, &clip);
-+    cols_date = L.list.w >= 560;
++    cols_date = L.list.w >= 640;
 +    cols_size = L.list.w >= 400;
 +    first = (int)(ui_pk_sc / UI_PK_ROW);
 +    last = FFMIN(ui_pk_nv - 1, (int)((ui_pk_sc + L.list.h) / UI_PK_ROW));
@@ -11952,28 +12220,17 @@
 +            tx += 30;
 +        ui_icon(e->dir ? UI_IC_FOLDER : UI_IC_FILE, tx + 10, cy, 18, 245, 245, 245, e->dir ? 255 : 190);
 +        tx += 30;
-+        if (cols_date) {
-+            char ds[40];
-+            struct tm tm;
-+            time_t t = e->mtime;
++        if (cols_date) {                        /* v49: Modified, told the way Files tells it */
++            char ds[48];
 +
-+            localtime_r(&t, &tm);
-+            strftime(ds, sizeof(ds), "%b %d, %Y", &tm);
++            ui_pk_when(e->mtime, now, ds, sizeof(ds));
 +            ui_label(right - ui_text_width(ds, 14), cy, ds, 14, 170, 170, 170, 255);
-+            right -= 130;
++            right -= 190;
 +        }
 +        if (cols_size && !e->dir) {
 +            char ss[32];
-+            double sz = (double)e->size;
 +
-+            if (sz < 1000.0)
-+                snprintf(ss, sizeof(ss), "%d B", (int)sz);
-+            else if (sz < 1e6)
-+                snprintf(ss, sizeof(ss), "%.0f kB", sz / 1e3);
-+            else if (sz < 1e9)
-+                snprintf(ss, sizeof(ss), "%.1f MB", sz / 1e6);
-+            else
-+                snprintf(ss, sizeof(ss), "%.2f GB", sz / 1e9);
++            ui_pk_fmt_size((double)e->size, ss, sizeof(ss));
 +            ui_label(right - ui_text_width(ss, 14), cy, ss, 14, 170, 170, 170, 255);
 +        }
 +        if (cols_size)
@@ -12000,37 +12257,74 @@
 +    }
 +    SDL_RenderSetClipRect(renderer, NULL);
 +
-+    /* the foot */
++    /* the foot: what is in the folder or chosen, then the toggles, then the buttons */
 +    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
 +    SDL_RenderDrawLine(renderer, L.p.x + 12, L.p.y + L.p.h - UI_PK_FOOT, L.p.x + L.p.w - 12, L.p.y + L.p.h - UI_PK_FOOT);
-+    if (L.tog && ui_pk_mode != 1) {
-+        snprintf(tmp, sizeof(tmp), "All files: %s", ui_pk_all ? "On" : "Off");
-+        ui_label(L.all.x, L.all.y + L.all.h / 2, tmp, 15, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190,
-+                 ui_pk_hbtn == 5 ? 255 : 190, 255);
-+        L.hid.x = L.all.x + ui_text_width(tmp, 15) + 26;
++    cyf = L.ok.y + L.ok.h / 2;
++    {
++        int sx = L.p.x + 20, btn_left = ui_pk_mode == 0 ? L.ok.x : L.extra.x, sw = L.tog ? 250 : btn_left - sx - 16;
++
++        msg = ui_pk_status(lead, sizeof(lead), tail, sizeof(tail));
++        tw = ui_text_width(tail, 15);
++        if (lead[0]) {                          /* the name gives way, so the size or the count at its end always shows */
++            ui_fit_text(lead, 15, FFMAX(sw - tw - ui_text_width("\"\"", 15), 30));
++            snprintf(tmp, sizeof(tmp), "\"%s\"%s", lead, tail);
++        } else {
++            snprintf(tmp, sizeof(tmp), "%s", tail);
++            ui_fit_text(tmp, 15, FFMAX(sw, 40));
++        }
++        if (msg)
++            ui_label(sx, cyf, tmp, 15, av_clip(cfg_bar_r + 60, 0, 255), av_clip(cfg_bar_g + 60, 0, 255),
++                     av_clip(cfg_bar_b + 60, 0, 255), 255);
++        else
++            ui_label(sx, cyf, tmp, 15, 190, 190, 190, 255);
++        memset(&ui_pk_hit_all, 0, sizeof(ui_pk_hit_all));
++        memset(&ui_pk_hit_hid, 0, sizeof(ui_pk_hit_hid));
++        if (L.tog) {
++            int tx = sx + 270, w;
++
++            if (ui_pk_mode != 1) {
++                snprintf(tmp, sizeof(tmp), "All files: %s", ui_pk_all ? "On" : "Off");
++                w = ui_text_width(tmp, 15);
++                ui_label(tx, cyf, tmp, 15, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, ui_pk_hbtn == 5 ? 255 : 190, 255);
++                ui_pk_hit_all.x = tx - 6;
++                ui_pk_hit_all.y = L.ok.y;
++                ui_pk_hit_all.w = w + 12;
++                ui_pk_hit_all.h = L.ok.h;
++                tx += w + 26;
++            }
++            snprintf(tmp, sizeof(tmp), "Hidden: %s", ui_pk_hidden ? "On" : "Off");
++            w = ui_text_width(tmp, 15);
++            ui_label(tx, cyf, tmp, 15, ui_pk_hbtn == 6 ? 255 : 190, ui_pk_hbtn == 6 ? 255 : 190, ui_pk_hbtn == 6 ? 255 : 190, 255);
++            ui_pk_hit_hid.x = tx - 6;
++            ui_pk_hit_hid.y = L.ok.y;
++            ui_pk_hit_hid.w = w + 12;
++            ui_pk_hit_hid.h = L.ok.h;
++        }
++    }
++    if (ui_pk_mode == 0) {                      /* Open on a folder, Play on a file; nothing chosen yet: Open, dimmed */
++        om = ui_pk_okmode();
++        ui_pk_btn_dim = om == 0;
++        ui_pk_button(&L.ok, om == 2 ? "Play" : "Open", ui_pk_hbtn == 1 && om != 0, 1);
++        ui_pk_btn_dim = 0;
++    } else if (ui_pk_mode == 1) {               /* Open (go into the chosen folder) and Play (play the chosen or open folder) */
++        int can_open = ui_pk_chosen() >= 0 && ui_pk_e[ui_pk_chosen()].dir;
++
++        ui_pk_btn_dim = !can_open;
++        ui_pk_button(&L.extra, "Open", ui_pk_hbtn == 3 && can_open, 0);
++        ui_pk_btn_dim = 0;
++        ui_pk_button(&L.ok, "Play", ui_pk_hbtn == 1, 1);
 +    } else {
-+        L.hid.x = L.all.x;
-+    }
-+    snprintf(tmp, sizeof(tmp), "Hidden: %s", ui_pk_hidden ? "On" : "Off");
-+    if (L.tog)
-+        ui_label(L.hid.x, L.hid.y + L.hid.h / 2, tmp, 15, ui_pk_hbtn == 6 ? 255 : 190, ui_pk_hbtn == 6 ? 255 : 190,
-+             ui_pk_hbtn == 6 ? 255 : 190, 255);
-+    nt = ui_pk_mode == 2 ? ui_pk_ticked() : 0;
-+    if (L.tog && ui_pk_mode == 2 && nt > 0 && L.p.w >= 760) {
-+        snprintf(tmp, sizeof(tmp), "%d ticked", nt);
-+        ui_label(L.hid.x + ui_text_width("Hidden: Off", 15) + 30, L.hid.y + L.hid.h / 2, tmp, 15,
-+                 av_clip(cfg_bar_r + 60, 0, 255), av_clip(cfg_bar_g + 60, 0, 255), av_clip(cfg_bar_b + 60, 0, 255), 255);
-+    }
-+    if (ui_pk_mode == 2) {
++        int nt = ui_pk_ticked();
++
 +        snprintf(tmp, sizeof(tmp), "%s", L.p.w >= 740 ? "Add this folder" : "Folder");
 +        ui_pk_button(&L.extra, tmp, ui_pk_hbtn == 3, 0);
-+    }
-+    ui_pk_button(&L.cancel, "Cancel", ui_pk_hbtn == 2, 0);
-+    if (ui_pk_mode == 2 && nt > 0) {
-+        snprintf(tmp, sizeof(tmp), "Add %d", nt);
-+        ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1);
-+    } else {
-+        ui_pk_button(&L.ok, okname, ui_pk_hbtn == 1, 1);
++        if (nt > 0) {
++            snprintf(tmp, sizeof(tmp), "Add %d", nt);
++            ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1);
++        } else {
++            ui_pk_button(&L.ok, "Add", ui_pk_hbtn == 1, 1);
++        }
 +    }
 +    ui_pk_cm_draw();
 +}
@@ -12075,34 +12369,57 @@
 +    }
 +    if (ui_pk_hbtn >= 10)
 +        ;
-+    else if (ui_pk_in(&L.up, x, y))
-+        ui_pk_hbtn = 0;
++    else if (ui_pk_in(&L.nav[0], x, y))
++        ui_pk_hbtn = 20;                        /* Back */
++    else if (ui_pk_in(&L.nav[1], x, y))
++        ui_pk_hbtn = 21;                        /* Forward */
++    else if (ui_pk_in(&L.nav[2], x, y))
++        ui_pk_hbtn = 22;                        /* Up */
++    else if (ui_pk_in(&L.xb, x, y))
++        ui_pk_hbtn = 4;                         /* close */
 +    else if (ui_pk_in(&L.ok, x, y))
 +        ui_pk_hbtn = 1;
-+    else if (ui_pk_in(&L.cancel, x, y))
-+        ui_pk_hbtn = 2;
-+    else if (ui_pk_mode == 2 && ui_pk_in(&L.extra, x, y))
++    else if (ui_pk_mode != 0 && ui_pk_in(&L.extra, x, y))
 +        ui_pk_hbtn = 3;
-+    else if (L.tog && ui_pk_mode != 1 && x >= L.all.x && x < L.all.x + 110 && y >= L.all.y && y < L.all.y + L.all.h)
++    else if (ui_pk_in(&ui_pk_hit_all, x, y))
 +        ui_pk_hbtn = 5;
-+    else if (L.tog && y >= L.hid.y && y < L.hid.y + L.hid.h && x >= (ui_pk_mode != 1 ? L.all.x + 130 : L.all.x) &&
-+             x < (ui_pk_mode != 1 ? L.all.x + 130 : L.all.x) + 110)
++    else if (ui_pk_in(&ui_pk_hit_hid, x, y))
 +        ui_pk_hbtn = 6;
 +
 +    if (ev->type == SDL_MOUSEBUTTONDOWN) {
 +        if (ev->button.button != SDL_BUTTON_LEFT) {
 +            if (ev->button.button == SDL_BUTTON_RIGHT && ui_pk_hrow >= 0)
 +                ui_pk_cm_start(ui_pk_hrow, x, y);       /* v45: a right click on a row opens its menu (it used to go up a folder) */
++            else if (ev->button.button == SDL_BUTTON_X1)
++                ui_pk_hist_step(-1);            /* v49: the side buttons of a mouse: Back */
++            else if (ev->button.button == SDL_BUTTON_X2)
++                ui_pk_hist_step(1);             /* Forward */
 +        } else if (!ui_pk_in(&L.p, x, y)) {
 +            ui_pk_close(is);                    /* a click outside closes it */
-+        } else if (ui_pk_hbtn == 0) {
++        } else if (ui_pk_hbtn == 20) {
++            ui_pk_hist_step(-1);
++        } else if (ui_pk_hbtn == 21) {
++            ui_pk_hist_step(1);
++        } else if (ui_pk_hbtn == 22) {
 +            ui_pk_up();
-+        } else if (ui_pk_hbtn == 1) {
-+            ui_pk_confirm(is, 0);
-+        } else if (ui_pk_hbtn == 2) {
++        } else if (ui_pk_hbtn == 4) {
 +            ui_pk_close(is);
++        } else if (ui_pk_hbtn == 1) {
++            if (ui_pk_mode == 0) {
++                int om = ui_pk_okmode();
++
++                if (om == 1)
++                    ui_pk_enter_sel();          /* a folder is chosen: Open goes into it */
++                else if (om == 2)
++                    ui_pk_confirm(is, 0);       /* a file is chosen: Play */
++            } else {
++                ui_pk_confirm(is, 0);
++            }
 +        } else if (ui_pk_hbtn == 3) {
-+            ui_pk_confirm(is, 1);
++            if (ui_pk_mode == 1)
++                ui_pk_enter_sel();              /* Open Folder: Open goes into the chosen folder, Play (the main button) plays it */
++            else
++                ui_pk_confirm(is, 1);
 +        } else if (ui_pk_hbtn == 5 || ui_pk_hbtn == 6) {
 +            char keep[PATH_MAX];
 +
@@ -12207,6 +12524,10 @@
 +            if (k == SDLK_ESCAPE)
 +                ui_pk_cm_open = 0;
 +            return 1;                           /* v45: the row menu uses the keys while it is open */
++        }
++        if (alt && (k == SDLK_LEFT || k == SDLK_RIGHT)) {       /* v49: Back and Forward */
++            ui_pk_hist_step(k == SDLK_LEFT ? -1 : 1);
++            return 1;
 +        }
 +        if (k == SDLK_ESCAPE) {
 +            if (ui_pk_filter[0]) {
@@ -12331,7 +12652,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +15236,1018 @@
+@@ -3266,6 +15557,1018 @@
  }
  
  /* handle an event sent by the GUI */
@@ -13350,7 +13671,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +16256,103 @@
+@@ -3274,86 +16577,103 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
@@ -13504,7 +13825,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +16369,86 @@
+@@ -3370,40 +16690,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -13603,7 +13924,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +16485,23 @@
+@@ -3440,9 +16806,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -13627,7 +13948,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +16511,21 @@
+@@ -3452,9 +16832,21 @@
              }
              break;
          case SDL_QUIT:
@@ -13650,7 +13971,7 @@
          default:
              break;
          }
-@@ -3524,17 +16595,70 @@
+@@ -3524,17 +16916,70 @@
      return 0;
  }
  
@@ -13728,7 +14049,7 @@
  
      return 0;
  }
-@@ -3678,13 +16802,7 @@
+@@ -3678,13 +17123,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -13743,7 +14064,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +16818,21 @@
+@@ -3700,6 +17139,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -13765,7 +14086,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +16850,9 @@
+@@ -3717,10 +17171,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -13777,7 +14098,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +16860,7 @@
+@@ -3728,7 +17181,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -13786,7 +14107,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +16874,103 @@
+@@ -3742,15 +17195,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }
@@ -13801,7 +14122,8 @@
 +    /* Play the queue. The window stays open between files and when the queue is empty. */
 +    {
 +    int missing_run = 0;                        /* v47: how many items in a row were skipped */
-+
+ 
+-    event_loop(is);
 +    for (;;) {
 +        int next, skip_dir;
 +
@@ -13881,8 +14203,7 @@
 +        }
 +        {
 +            const void *me = is;
- 
--    event_loop(is);
++
 +            event_loop(is);                     /* returns when this item is over */
 +            if (ui_failed_is == me) {           /* v47: it could not be opened: it counts as skipped */
 +                ui_failed_is = NULL;

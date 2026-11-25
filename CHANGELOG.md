@@ -6,6 +6,13 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v49
+- One top row: Back, Forward, Up, the title, the path, Name / Modified / Size and a close button (Cancel is gone)
+- Back and Forward history (Alt+Left, Alt+Right and the side buttons of a mouse)
+- The main button follows the row: Open on a folder, Play on a file; Open Folder has Open and Play side by side
+- Modified times read like Files: 3 minutes ago, Today at, Yesterday at, the weekday, 1 week ago, then the date
+- The foot gives the item count of the folder, or the size of the chosen file
+
 ## v48
 - Crossfade and Sleep timer in the queue menu are sliders now, like the ones in Preferences: the track and its fill, the value at the end, no cascade. The name nudges in from the left margin while the mouse is on the row, and the wheel moves the slider while the mouse is on it.
 - The Sleep timer slider has the stops Off, End of track, 5, 10, 15, 30, 45, 60, 90 and 120 min.
