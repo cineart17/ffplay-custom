@@ -7,7 +7,13 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
 ## v54
-- playlists (Playlists in the picker, Add to playlist in the picker, queue and tile menus, Rename and Delete), a reworked Library tree (Videos, Music, Devices with System, Playlists), redrawn icons, solid arrowheads
+- Playlists are kept in ~/.config/ffplay-custom/playlists and can be filled from the picker, queue or tile menus
+- Add to playlist offers existing lists or a new one, and a click on a playlist in the tree plays it
+- Playlists can be renamed and deleted from their right-click menu
+- The picker tree shows Videos and Music, then Devices with System, then Playlists
+- Video, music, system, external-drive and playlist icons mark the new tree rows
+- Drop-down arrows are solid triangles with no arrow lines
+- ExtDrive, Music, Movies, Videos and Pictures are no longer listed as devices
 
 ## v53
 - Ctrl+click in the file picker keeps the file you clicked before, so click one file and Ctrl+click two more and all three play in that order
