@@ -6,6 +6,9 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v56
+- Add to playlist works from the tiled view: the playlist chooser (and its "Added to" message) is now drawn there, where it was open but invisible
+
 ## v55
 - Open Media has one play button: Play for a file, Play folder for a folder (or for the folder you are in when nothing is chosen), Play selected for several files
 - The Open folder button is gone: double-click a folder or press Enter to open it

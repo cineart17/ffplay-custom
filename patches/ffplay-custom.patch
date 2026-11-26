@@ -10266,7 +10266,7 @@
 +        is->force_refresh = 1;
 +    }
 +
-+    if (ui_menu_open || ui_prefs_open || ui_pk_open) {
++    if (ui_menu_open || ui_prefs_open || ui_pk_open || ui_apl_busy()) {     /* v56: the playlist chooser (and its message) are drawn by the glass frame, and no menu is open in the tiled view */
 +        ui_glass_frame(is);         /* frosted glass over the blurred picture */
 +        return;
 +    }
