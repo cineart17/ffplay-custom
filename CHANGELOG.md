@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v57
+
+- Stripfilm view for videos: a two finger swipe up opens a strip of small tiles below a large tile that keeps playing, with the seek and volume bars between them; swipe up again (or one hard swipe) for all the small tiles; spring loaded scrolling in both views (tiles squeeze with the speed and slowly spring back)
+
 ## v56
 - Add to playlist works from the tiled view: the playlist chooser (and its "Added to" message) is now drawn there, where it was open but invisible
 
