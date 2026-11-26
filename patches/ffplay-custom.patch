@@ -3200,8 +3200,9 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -4439,9 +4440,8 @@
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -10638,7 +10638,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13526,4890 @@
+@@ -3221,24 +13526,4901 @@
      }
  }
  
@@ -13953,7 +13953,7 @@
 +    L->crumbs.h = bh;
 +    L->crumbs.w = (L->sort_on ? L->sortb.x : L->gridb.x) - 10 - L->crumbs.x;
 +
-+    L->ok.w = ui_pk_mode == 0 ? (L->p.w >= 740 ? 196 : 132) : 124;   /* v52: "Play selected files" fits */
++    L->ok.w = ui_pk_mode == 0 ? (L->p.w >= 740 ? 150 : 132) : 124;   /* v55: "Play selected" fits */
 +    L->ok.h = 38;
 +    L->ok.x = L->p.x + L->p.w - 20 - L->ok.w;
 +    L->ok.y = L->p.y + L->p.h - UI_PK_FOOT + (UI_PK_FOOT - 38) / 2;
@@ -14070,8 +14070,9 @@
 +    ui_pk_go(path);
 +}
 +
-+/* The main button (right end of the foot), v52:
-+   Open Media: "Play file" for a file, "Play folder" for a folder, "Play selected files" for a ticked set.
++/* v55: the main button (right end of the foot).
++   Open Media: "Play" for a chosen file, "Play folder" for a chosen folder or, with nothing chosen, the folder you are in,
++   "Play selected" for a ticked set, "Play playlist" inside a playlist when no song is chosen.
 +   Add to Queue: "Add", in the order the files were ticked. */
 +static void ui_pk_do_ok(VideoState *is)
 +{
@@ -14090,19 +14091,29 @@
 +        }
 +        return;
 +    }
-+    if (!e)
++    if (!e || !ui_pk_touched) {                 /* v55: nothing chosen yet: the whole folder (or playlist) */
++        if (ui_pk_pl[0]) {
++            ui_pk_send_playlist(is, 'o', ui_pk_pl);
++            ui_pk_close(is);
++        } else if (ui_pk_nrw > 0) {
++            ui_pk_send(is, 'o', ui_pk_dir);
++            ui_pk_close(is);
++        }
 +        return;
++    }
 +    ui_pk_path_of(e, path, sizeof(path));
 +    ui_pk_send(is, 'o', path);                  /* a folder plays everything in it */
 +    ui_pk_close(is);
 +}
 +
-+/* The button before the play button: "Open folder" (go into it), or "Add this folder" in Add to Queue */
++/* The button before the play button: "Add this folder" in Add to Queue, "Play playlist" in a playlist when a song is chosen (v55: no more "Open folder") */
 +static void ui_pk_do_extra(VideoState *is)
 +{
 +    char path[PATH_MAX + 300];
 +    UiPkEnt *e = ui_pk_cur_ent();
 +
++    if (ui_pk_mode == 0 && !(ui_pk_pl[0] && ui_pk_touched && e && !ui_pk_ticked(NULL)))
++        return;                                 /* v55: the empty space where the button is not drawn */
 +    if (ui_pk_pl[0] && !(e && e->dir)) {        /* v54: in a playlist this button is for the whole playlist */
 +        ui_pk_send_playlist(is, ui_pk_mode == 2 ? 'a' : 'o', ui_pk_pl);
 +        ui_pk_close(is);
@@ -14113,8 +14124,6 @@
 +            snprintf(path, sizeof(path), "%s", ui_pk_dir);
 +        ui_pk_send(is, 'a', path);
 +        ui_pk_close(is);
-+    } else if (e && e->dir) {
-+        ui_pk_enter(e);
 +    }
 +}
 +
@@ -14125,10 +14134,12 @@
 +
 +    if (!e)
 +        return;
-+    if (e->dir)
++    if (e->dir) {
 +        ui_pk_enter(e);
-+    else
++    } else {
++        ui_pk_touched = 1;                      /* v55: Enter on the highlighted file plays that file, not the folder */
 +        ui_pk_do_ok(is);
++    }
 +}
 +
 +static void ui_pk_tick_row(int row)
@@ -14853,7 +14864,7 @@
 +    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 26);
 +    SDL_RenderDrawLine(renderer, L.p.x + 12, L.p.y + L.p.h - UI_PK_FOOT, L.p.x + L.p.w - 12, L.p.y + L.p.h - UI_PK_FOOT);
 +    {
-+        int sw = L.tog ? 316 : L.extra.x - (L.p.x + 20) - 16, fy = L.ok.y + L.ok.h / 2;
++        int sw = L.tog ? 316 : (ui_pk_mode == 0 && !ui_pk_pl[0] ? L.ok.x : L.extra.x) - (L.p.x + 20) - 16, fy = L.ok.y + L.ok.h / 2;
 +
 +        if (av_gettime_relative() < ui_pk_note_until) {
 +            snprintf(tmp, sizeof(tmp), "%s", ui_pk_note);
@@ -14872,6 +14883,7 @@
 +    }
 +    {
 +        UiPkEnt *ce = ui_pk_cur_ent();
++        UiPkEnt *ch = ui_pk_touched ? ce : NULL;        /* v55: the row that was chosen (not just highlighted) */
 +        int nt = ui_pk_ticked(NULL);
 +        int wide = L.p.w >= 740;
 +
@@ -14883,18 +14895,17 @@
 +            else
 +                snprintf(tmp, sizeof(tmp), "Add");
 +            ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1, nt > 0 || (ce && !ce->dir));
-+        } else if (ce && ce->dir && !nt) {       /* v52: a folder has "Open folder" and "Play folder" */
-+            ui_pk_button(&L.extra, wide ? "Open folder" : "Open", ui_pk_hbtn == 3, 0, 1);
-+            ui_pk_button(&L.ok, wide ? "Play folder" : "Play", ui_pk_hbtn == 1, 1, 1);
-+        } else {
++        } else {                                /* v55: one main button, and only a playlist has a second one */
 +            if (nt > 1)
-+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play selected files" : "Play selected");
-+            else if (ce && !ce->dir)
-+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play file" : "Play");
++                snprintf(tmp, sizeof(tmp), "%s", "Play selected");
++            else if (nt == 1 || (ch && !ch->dir))
++                snprintf(tmp, sizeof(tmp), "%s", "Play");
++            else if (ui_pk_pl[0] && !ch)
++                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play playlist" : "Play all");
 +            else
-+                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play file" : "Play");
-+            ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1, nt > 0 || (ce && !ce->dir));
-+            if (ui_pk_pl[0] && !nt)             /* v54: the whole playlist */
++                snprintf(tmp, sizeof(tmp), "%s", wide ? "Play folder" : "Play");
++            ui_pk_button(&L.ok, tmp, ui_pk_hbtn == 1, 1, nt > 0 || ch || ui_pk_nrw > 0);
++            if (ui_pk_pl[0] && !nt && ch)       /* v54: the whole playlist, when a song is chosen */
 +                ui_pk_button(&L.extra, wide ? "Play playlist" : "Play all", ui_pk_hbtn == 3, 0, ui_pk_nrw > 0);
 +        }
 +    }
@@ -15532,7 +15543,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +18437,1019 @@
+@@ -3266,6 +18448,1019 @@
  }
  
  /* handle an event sent by the GUI */
@@ -16552,7 +16563,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +19458,104 @@
+@@ -3274,86 +19469,104 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
@@ -16707,7 +16718,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +19572,86 @@
+@@ -3370,40 +19583,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -16806,7 +16817,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +19688,23 @@
+@@ -3440,9 +19699,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -16830,7 +16841,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +19714,21 @@
+@@ -3452,9 +19725,21 @@
              }
              break;
          case SDL_QUIT:
@@ -16853,7 +16864,7 @@
          default:
              break;
          }
-@@ -3524,17 +19798,70 @@
+@@ -3524,17 +19809,70 @@
      return 0;
  }
  
@@ -16931,7 +16942,7 @@
  
      return 0;
  }
-@@ -3678,13 +20005,7 @@
+@@ -3678,13 +20016,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -16946,7 +16957,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +20021,21 @@
+@@ -3700,6 +20032,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -16968,7 +16979,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +20053,9 @@
+@@ -3717,10 +20064,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -16980,7 +16991,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +20063,7 @@
+@@ -3728,7 +20074,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -16989,7 +17000,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +20077,103 @@
+@@ -3742,15 +20088,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }
