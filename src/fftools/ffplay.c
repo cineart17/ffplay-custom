@@ -1393,9 +1393,11 @@ static double ui_tile_lift[32];             /* 0 to 1: how far each tile has ris
    speed and slowly spring back. */
 #define UI_SF_HARD 5.0                          /* a swipe up this long goes straight to the tiles of all (a normal one stops at the strip) */
 #define UI_SF_SWIPE 1.5                         /* tiles of the strip for each notch of a sideways swipe */
-#define UI_SQ_PITCH 0.40                        /* at full speed the tiles come this much closer together ... */
-#define UI_SQ_SIZE 0.12                         /* ... and shrink this much */
-static int ui_sf_lift_px = 0;                   /* how far the bars are lifted for the Stripfilm view (0 = at the bottom edge) */
+#define UI_SQ_PITCH 0.12                        /* v58: at full speed the tiles come this much closer together ... */
+#define UI_SQ_SIZE 0.12                         /* ... and shrink as much, so they never touch (it was 0.40 and 0.12: they overlapped) */
+static int ui_sf_lift_px = 0;                   /* v58: 1 = the Stripfilm view is up and the bars are drawn inside its large tile */
+static SDL_Rect ui_sf_box;                      /* v58: the large tile of the Stripfilm view: the bars sit in its bottom */
+static int ui_sf_tw = 100, ui_sf_th = 64;       /* v58: a tile of the strip (a tile that is dragged keeps this size) */
 static int ui_sf_mode = 0;                      /* 1 = the Stripfilm layout (video items), 0 = the tiles of all */
 static double ui_sf_p = 0.0;                    /* 0 to 1: how far the view has moved into the Stripfilm layout */
 static double ui_sf_pos = 0.0, ui_sf_target = 0.0;      /* the strip: the queue number in the middle (the video that plays does not change) */
@@ -1855,9 +1857,15 @@ static void set_default_window_size(int width, int height, AVRational sar)
 /* v57: is y on the strip the mouse reacts to? In the Stripfilm view the bars are lifted and the strip of tiles is below them. */
 static int ui_bar_y(VideoState *is, int y)
 {
-    int top = is->height - UI_BAR_H - ui_sf_lift_px;
+    int mx = 0, bottom = is->height;
 
-    return y >= top && (!ui_sf_lift_px || y < top + UI_BAR_H);
+    if (ui_sf_lift_px) {                        /* v58: in the Stripfilm view the bars are in the bottom of the large tile */
+        SDL_GetMouseState(&mx, NULL);
+        if (mx < ui_sf_box.x || mx >= ui_sf_box.x + ui_sf_box.w)
+            return 0;
+        bottom = ui_sf_box.y + ui_sf_box.h;
+    }
+    return y >= bottom - UI_BAR_H && (!ui_sf_lift_px || y < bottom);
 }
 
 static int ui_shown_once = 0;   /* the window is shown once; later items leave its place and workspace alone */
@@ -2238,16 +2246,18 @@ static void ui_layout(VideoState *is, SDL_Rect *sk, SDL_Rect *vo)
     int margin_x = 24;
     int bottom_offset = 12;
     int bar_h = 6;
-    int ty = is->height - bottom_offset - bar_h - ui_sf_lift_px;     /* v57 */
+    int x0 = ui_sf_lift_px ? ui_sf_box.x : 0;                           /* v58: the bars sit in the large tile of the Stripfilm view */
+    int x1 = ui_sf_lift_px ? ui_sf_box.x + ui_sf_box.w : is->width;
+    int ty = (ui_sf_lift_px ? ui_sf_box.y + ui_sf_box.h : is->height) - bottom_offset - bar_h;
 
     vo->w = 90;
     vo->h = bar_h;
     vo->y = ty;
-    vo->x = is->width - margin_x - 40 - vo->w;
-    sk->x = margin_x + 28;                  /* room for the previous button on the left */
+    vo->x = x1 - margin_x - 40 - vo->w;
+    sk->x = x0 + margin_x + 28;             /* room for the previous button on the left */
     sk->y = ty;
     sk->h = bar_h;
-    sk->w = vo->x - 104 - sk->x;            /* room for next, shuffle and repeat on the right */
+    sk->w = FFMAX(vo->x - 104 - sk->x, 20); /* room for next, shuffle and repeat on the right */
 }
 
 static void ui_text(int x, int y, const char *s)
@@ -2573,12 +2583,11 @@ static void ui_draw(VideoState *is)
     {                                           /* the bars sit on a flat strip of dark frosted glass: edge to edge, from the bottom */
         SDL_Rect strip;
 
-        strip.x = 0;
-        strip.w = is->width;
+        strip.x = ui_sf_lift_px ? ui_sf_box.x : 0;              /* v58: in the Stripfilm view the glass is the bottom of the large tile */
+        strip.w = ui_sf_lift_px ? ui_sf_box.w : is->width;
         strip.h = UI_BAR_GLASS;
-        strip.y = is->height - UI_BAR_GLASS;
-        if (!ui_sf_lift_px)                     /* v57: lifted bars float over the Stripfilm view */
-            ui_glass_bar(&strip);
+        strip.y = (ui_sf_lift_px ? ui_sf_box.y + ui_sf_box.h : is->height) - UI_BAR_GLASS;
+        ui_glass_bar(&strip);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     }
     ui_seek_bar(is, &sk, frac);
@@ -9523,6 +9532,11 @@ static void ui_tv_play(VideoState *is, const char *path)
         }
         free(rp);
     }
+    if (idx >= 0 && idx == q_pos && ui_sf_active(is)) {         /* v58: in the Stripfilm view the view stays; a paused video plays on */
+        if (is->paused)
+            toggle_pause(is);
+        return;
+    }
     if (idx >= 0 && idx == q_pos) {             /* the one that plays: back to it */
         if (ui_flow_video(is))
             ui_tile_open(is);
@@ -9535,7 +9549,8 @@ static void ui_tv_play(VideoState *is, const char *path)
         queue_add(path);
         idx = q_count - 1;
     }
-    ui_tv_exit(is);
+    if (!ui_sf_active(is))                      /* v58: the Stripfilm view stays open while the next video starts */
+        ui_tv_exit(is);
     q_forced = idx;
     ui_end_current(is);
 }
@@ -10202,7 +10217,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
 {
     UiTvOrd ord[48];
     int no = 0, k0, k1, c, o, W = is->width, vm = ui_flow_vmode, K;
-    double pitch = R->sw * 1.08 * (1.0 - UI_SQ_PITCH * ui_sq);     /* v57: the tiles squeeze together while they scroll */
+    double pitch = R->sw * 0.95 * (1.0 - UI_SQ_PITCH * ui_sq);     /* v57: the tiles squeeze together while they scroll */
 
     K = (int)(W / (2.0 * pitch)) + 3;
     k0 = FFMAX((int)floor(R->pos) - K, 0);
@@ -10406,8 +10421,8 @@ static int ui_sf_put(const char *path, int live, double cx, double cy, double bw
     if (!tex)
         return pv;
     if (shadow)
-        ui_tile_shadow(tex, out, al, 0.0, FFMIN(out->w, out->h) / 11);
-    ui_flow_quad_round(tex, out, al, md, 0.0, FFMIN(out->w, out->h) / 11);
+        ui_tile_shadow(tex, out, al, 0.0, 0);   /* v58: square corners, whatever the roundness setting is */
+    ui_flow_quad_round(tex, out, al, md, 0.0, 0);
     return pv;
 }
 
@@ -10416,7 +10431,7 @@ static void ui_sf_ring(const SDL_Rect *t, int rr, int th)
 {
     int row;
 
-    rr = (int)(av_clip(rr, 0, FFMIN(t->w, t->h) / 2) * ui_round_k() + 0.5);
+    rr = 0;                                     /* v58: square corners */
     for (row = 0; row < t->h; row++) {
         double e = FFMIN(row + 0.5, t->h - row - 0.5);
         int io = e < rr ? (int)(rr - sqrt((double)rr * rr - (rr - e) * (rr - e)) + 0.5) : 0, ii = th;
@@ -10446,20 +10461,24 @@ static void ui_sf_ring(const SDL_Rect *t, int rr, int th)
     }
 }
 
-/* v57: the Stripfilm view: the video that plays in a large tile (the previous and next tiles peek out behind it), the bars below it,
-   and the whole queue as a strip of small tiles under the bars. The strip moves by itself: the video that plays does not change. */
+/* v58: the Stripfilm view: the video that plays in a large tile (the previous and next tiles peek out behind it) with the seek and
+   volume bars in its bottom and its title under it, and the whole queue as a strip of small tiles on a flat dark frosted band at the
+   bottom of the window. The strip has one fixed height, its tiles are square and never change size under the mouse. */
 static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs, int hi)
 {
-    int W = is->width, H = is->height, sh_s, tw_s, lift, y0, y1, c0, k0, k1, K, n, dn;
+    int W = is->width, H = is->height, band_h, y0, y1, c0, k0, k1, K, n, dn, tw, th;
     double fa = ui_sf_p * ep, aw, ah, asp, bwid, bhgt, pitch, sc, sy, cy;
-    SDL_Rect bt, r;
+    SDL_Rect bt, r, band;
+    char name[320];
 
-    sh_s = (int)av_clipd(H * 0.105, 34.0, 92.0);        /* the height of a tile of the strip */
-    tw_s = (int)(sh_s * 1.6);
-    lift = sh_s + 22;                                   /* the bars sit this much above the bottom edge */
-    ui_sf_lift_px = (int)(lift * ui_sf_p * ep);
+    th = H < 460 ? 52 : 64;                             /* the strip has one fixed height, whatever the window */
+    tw = (int)(th * 1.6);
+    ui_sf_tw = tw;
+    ui_sf_th = th;
+    band_h = th + 20;
+    ui_sf_lift_px = fa > 0.02 ? 1 : 0;                  /* the bars are drawn inside the large tile (ui_sf_box) */
     y0 = H < 460 ? 40 : 56;
-    y1 = (H - 18 - lift) - 28;                          /* the large tile ends above the bars */
+    y1 = H - band_h - 44;                               /* the large tile ends above its title, which is above the strip */
     ah = FFMAX(y1 - y0, 40);
     aw = W * 0.76;
     asp = (ui_live_ok && ui_live_rect.h > 0) ? (double)ui_live_rect.w / ui_live_rect.h : 16.0 / 9.0;
@@ -10480,7 +10499,7 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
         ui_sf_target = floor(ui_sf_target + 0.5);
         ui_sf_touch = 0;
     }
-    ui_sf_pos += (ui_sf_target - ui_sf_pos) * (1.0 - exp(-dt * 9.0));
+    ui_sf_pos += (ui_sf_target - ui_sf_pos) * (1.0 - exp(-dt * 13.0));       /* tighter than before */
     if (fabs(ui_sf_target - ui_sf_pos) < 0.003)
         ui_sf_pos = ui_sf_target;
     else
@@ -10515,11 +10534,13 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
             lr.h = ui_live_rect.h + (int)((bt.h - ui_live_rect.h) * ep);
         }
         ui_tv_glow(bt.x + bt.w / 2.0, bt.y + bt.h / 2.0, bt.w * 0.62, bt.h * 0.75, (int)(110 * fa * ep));
-        ui_tile_shadow(ui_live_tex, &lr, (int)(255 * ui_sf_p), 0.0, (int)(FFMIN(lr.w, lr.h) / 11.0 * ep));
-        ui_flow_quad_round(ui_live_tex, &lr, (int)(255 * ui_sf_p), 255, 0.0, (int)(FFMIN(lr.w, lr.h) / 11.0 * ep));
+        ui_tile_shadow(ui_live_tex, &lr, (int)(255 * ui_sf_p), 0.0, 0);
+        ui_flow_quad_round(ui_live_tex, &lr, (int)(255 * ui_sf_p), 255, 0.0, 0);        /* square corners */
         r = bt;
+        ui_sf_box = lr;                                 /* the bars sit in the bottom of this */
     } else {
         ui_sf_put(q_items[q_pos], 0, W / 2.0, cy, bt.w, bt.h, 0, 0.0, (int)(255 * ui_sf_p), 255, 1, &r);
+        ui_sf_box = r;
     }
     if (ui_tvh_n < 128) {
         ui_tvh[ui_tvh_n].r = bt;
@@ -10528,21 +10549,34 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
         ui_tvh_n++;
     }
 
-    /* the strip: no titles, the tiles come closer together and a little smaller the faster it moves */
-    pitch = (tw_s + 12) * (1.0 - UI_SQ_PITCH * ui_sq);
-    sc = 1.0 - UI_SQ_SIZE * ui_sq;
-    sy = H - 16 - sh_s / 2.0 + (1.0 - ui_sf_p) * 56.0;
+    /* the title of the video that plays, under its large tile */
+    ui_tv_name(q_items[q_pos], name, sizeof(name));
+    ui_fit_text(name, 18, bt.w);
+    ui_label_c(W / 2, bt.y + bt.h + 24, name, 18, 255, 255, 255, (int)(255 * fa));
+
+    /* the band behind the strip: flat dark frosted glass, edge to edge, like the one behind the seek and volume bars */
+    band.x = 0;
+    band.w = W;
+    band.h = band_h;
+    band.y = H - band_h + (int)((1.0 - fa) * band_h);
+    ui_glass_bar(&band);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    /* the strip: no titles; the tiles come a little closer together and shrink by the same amount the faster it moves */
+    pitch = (tw + 12) * (1.0 - UI_SQ_PITCH * ui_sq);
+    sc = 1.0 - UI_SQ_PITCH * ui_sq;
+    sy = H - band_h / 2.0 + (1.0 - fa) * band_h;
     K = FFMIN((int)(W / (2.0 * pitch)) + 3, 40);
     c0 = av_clip((int)floor(ui_sf_pos + 0.5), 0, q_count - 1);
     k0 = FFMAX(c0 - K, 0);
     k1 = FFMIN(c0 + K, q_count - 1);
     for (n = k0; n <= k1; n++) {                        /* the far ones first, the middle one on top */
         int i = n <= c0 ? n : k1 - (n - c0 - 1), play = i == q_pos, al, md, ti = i % 4093;
-        double x = W / 2.0 + (i - ui_sf_pos) * pitch, goal, lf, g;
+        double x = W / 2.0 + (i - ui_sf_pos) * pitch, goal, lf;
 
-        if (x < -tw_s || x > W + tw_s)
+        if (x < -tw || x > W + tw)
             continue;
-        goal = (hs == -1 && hi == i) ? 1.0 : 0.0;
+        goal = (hs == -1 && hi == i) ? 1.0 : 0.0;       /* the tile under the mouse only brightens (and plays its preview): no pop */
         lf = ui_tv_lift[ti];
         lf += (goal - lf) * (1.0 - exp(-dt * 14.0));
         if (fabs(goal - lf) < 0.004)
@@ -10550,20 +10584,19 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
         else
             ui_tv_moving = 1;
         ui_tv_lift[ti] = lf;
-        g = sc * (play ? 1.1 : 1.0) * (1.0 + 0.05 * lf);
         al = (int)((play ? 255 : 225) * ui_sf_p);
         al += (int)((255 * ui_sf_p - al) * lf);
         md = play ? 255 : 200 + (int)(55 * lf);
         if (ui_tv_drag && ui_tv_press == i && ui_tv_pressec == -1)
             al = al / 3;                                /* the one that is being dragged leaves a faint place behind */
-        if (ui_sf_put(q_items[i], play, x, sy - 6 * lf, tw_s * g, sh_s * g, 0, 0.0, al, md, 0, &r))
+        if (ui_sf_put(q_items[i], play, x, sy, tw * sc, th * sc, 0, 0.0, al, md, 0, &r))
             ui_tv_moving = 1;
         if (play) {                                     /* the mark of the video that plays: a white ring */
-            SDL_Rect rg = { r.x - 5, r.y - 5, r.w + 10, r.h + 10 };
+            SDL_Rect rg = { r.x - 4, r.y - 4, r.w + 8, r.h + 8 };
 
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, (int)(235 * ui_sf_p));
-            ui_sf_ring(&rg, FFMIN(r.w, r.h) / 11 + 5, 3);
+            ui_sf_ring(&rg, 0, 3);
         }
         if (ui_tvh_n < 128) {
             ui_tvh[ui_tvh_n].r = r;
@@ -10625,7 +10658,7 @@ static void ui_tv_draw(VideoState *is)
         prev = cur;
         prev_kind = kind;
         tgt = av_clipd((v - 2.0) / 16.0, 0.0, 1.0);
-        ui_sq += (tgt - ui_sq) * (1.0 - exp(-dt * (tgt > ui_sq ? 18.0 : 2.4)));    /* quick to squeeze, slow to spring back */
+        ui_sq += (tgt - ui_sq) * (1.0 - exp(-dt * (tgt > ui_sq ? 18.0 : 6.0)));    /* quick to squeeze, slow to spring back */
         if (ui_sq < 0.004 && tgt <= 0.0)
             ui_sq = 0.0;
         else
@@ -10692,8 +10725,8 @@ static void ui_tv_draw(VideoState *is)
         int r;
 
         sh = av_clipd(FFMIN(FFMIN(rp * 0.74, rp - 46.0), W * 0.24), 40.0, 340.0);      /* v38: bigger */
-        ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 9.0));
-        ui_tv_row += (rw - ui_tv_row) * (1.0 - exp(-dt * 9.0));
+        ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 13.0));
+        ui_tv_row += (rw - ui_tv_row) * (1.0 - exp(-dt * 13.0));
         if (fabs(col - ui_tv_pos) < 0.003)
             ui_tv_pos = col;
         else
@@ -10751,7 +10784,7 @@ static void ui_tv_draw(VideoState *is)
                 ui_label(34 + ui_text_width(head, sm ? 14 : 16) + 10, hy, cnt, sm ? 12 : 13, 255, 255, 255, 110);
             }
             sec->target = av_clip(sec->target, 0, FFMAX(sec->n - 1, 0));
-            sec->pos += (sec->target - sec->pos) * (1.0 - exp(-dt * 9.0));
+            sec->pos += (sec->target - sec->pos) * (1.0 - exp(-dt * 13.0));
             if (fabs(sec->target - sec->pos) < 0.003)
                 sec->pos = sec->target;
             else
@@ -10811,11 +10844,15 @@ static void ui_tv_draw(VideoState *is)
                 ui_tv_moving = 1;
             }
         }
-        g.h = (int)FFMIN(H * 0.2, 140);
-        g.w = asp > 0.0 ? (int)(g.h * asp) : g.h;
-        g.x = ui_hov_x - g.w / 2;
-        g.y = ui_hov_y - g.h / 2;
-        ui_tv_tile(p, &g, 215, 255);
+        if (vm && ui_sf_mode && ui_sf_p > 0.5) {  /* v58: in the Stripfilm view the dragged tile stays the size of a tile of the strip */
+            ui_sf_put(p, 0, ui_hov_x, ui_hov_y, ui_sf_tw, ui_sf_th, 0, 0.0, 215, 255, 0, &g);
+        } else {
+            g.h = (int)FFMIN(H * 0.2, 140);
+            g.w = asp > 0.0 ? (int)(g.h * asp) : g.h;
+            g.x = ui_hov_x - g.w / 2;
+            g.y = ui_hov_y - g.h / 2;
+            ui_tv_tile(p, &g, 215, 255);
+        }
         if (ui_tv_hit_at(ui_hov_x, ui_hov_y, &hs2, &hi2) && hs2 == -1 && hi2 != ui_tv_press) {      /* the place it would take */
             SDL_Rect m = { 0, 0, 0, 0 };
             int k;
@@ -11590,8 +11627,11 @@ static int ui_flow_click(VideoState *is, int x, int y)
 {
     int idx;
 
-    if (ui_tv_on(is))
+    if (ui_tv_on(is)) {
+        if (ui_sf_lift_px && ui_bar_y(is, y))   /* v58: the bars are over the large tile: the tap is theirs */
+            return 0;
         return ui_tv_click(is, x, y);
+    }
     idx = ui_flow_cover_at(is, x, y);
 
     if (idx < 0)
@@ -11706,7 +11746,7 @@ static void ui_flow_swipe(VideoState *is, SDL_Event *ev)
 /* The buttons on the seek bar's row: previous at the left end; next, shuffle and repeat at the right end */
 static void ui_ctrl_draw(VideoState *is, const SDL_Rect *sk)
 {
-    int cy = sk->y + sk->h / 2, ex = sk->x + sk->w;
+    int cy = sk->y + sk->h / 2, ex = sk->x + sk->w, px = (ui_sf_lift_px ? ui_sf_box.x : 0) + 34;     /* v58: px = the previous button */
 
     (void)is;
     SDL_SetRenderDrawColor(renderer, 235, 235, 235, 215);
@@ -11716,9 +11756,9 @@ static void ui_ctrl_draw(VideoState *is, const SDL_Rect *sk)
         stop.w = 2;
         stop.h = 12;
         stop.y = cy - 6;
-        stop.x = 34 - 9;
+        stop.x = px - 9;
         SDL_RenderFillRect(renderer, &stop);    /* previous: the bar, then the arrowhead */
-        ui_tri(34 - 5, cy, 9, 12, -1);
+        ui_tri(px - 5, cy, 9, 12, -1);
         ui_tri(ex + 16 - 4, cy, 9, 12, 1);      /* next: the arrowhead, then the bar */
         stop.x = ex + 16 + 6;
         SDL_RenderFillRect(renderer, &stop);
@@ -11754,7 +11794,7 @@ static int ui_ctrl_click(VideoState *is, int x)
 
     ui_layout(is, &sk, &vo);
     ex = sk.x + sk.w;
-    if (FFABS(x - 34) <= 12) {
+    if (FFABS(x - ((ui_sf_lift_px ? ui_sf_box.x : 0) + 34)) <= 12) {
         q_step = -1;                            /* the main loop plays the item before this one */
         ui_end_current(is);
     } else if (FFABS(x - (ex + 16)) <= 12) {

@@ -1,5 +1,15 @@
 # Changelog
 
+## v58
+
+- Stripfilm: the strip sits on a flat, dark frosted band, edge to edge, with one fixed height.
+- Stripfilm: the strip tiles, the tiles peeking behind the large one and the large playing tile are square, whatever the roundness setting is.
+- Stripfilm: hovering or dragging a tile no longer makes it bigger; the tile under the mouse only brightens and plays its preview.
+- Stripfilm: the seek and volume bars (and the previous, next, shuffle and repeat buttons) sit in the bottom of the large tile; the video's title sits under it.
+- Stripfilm: tapping a tile plays it and the view stays open.
+- Scrolling (Stripfilm and the small tiles): tighter, with less springing; tiles shrink as much as they come together, so they never overlap.
+- Small tiles: closer together. The music player's own tiles are not touched.
+
 Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
 
 ## Repository (after v22)
