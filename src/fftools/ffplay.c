@@ -981,7 +981,7 @@ static SDL_Rect ui_live_rect;           /* where the video is drawn full screen 
 static int ui_live_ok = 0;              /* 1 = the frame on screen was copied into ui_live_tex in this drawing */
 static SDL_Texture *ui_live_tex = NULL; /* the frame on screen, as a picture of its own for the tile */
 static int ui_live_w = 0, ui_live_h = 0;
-static void ui_flow_swipe(VideoState *is, SDL_Event *ev);
+static void ui_flow_swipe(VideoState *is, SDL_Event *ev, int vertical);
 static int ui_tv_on(VideoState *is);                    /* v37: the tiled queue view */
 static int ui_tv_cap(VideoState *is);
 static void ui_tv_swipe_x(VideoState *is, double ax);               /* v38: the parts of a swipe that belong to the tiled view */
@@ -1358,7 +1358,7 @@ static double  cfg_seek = 2.0;              /* seconds the Left/Right keys jump 
 static int     cfg_vol_step = 2;            /* volume change per Up/Down press */
 static int64_t cfg_hide_delay = 4000000;    /* microseconds until bars and cursor hide */
 static int     cfg_fullscreen = 1;          /* 1 = open in the conventional full screen, 0 = in a normal window */
-static int     cfg_crisp = 1;               /* 1 = letters placed with sub-pixel accuracy (v45) */
+static int     cfg_crisp = 1;               /* v63: not used any more (text is drawn naturally); still read so an old settings file loads */
 static int     cfg_tint = 50;               /* v46: how strong the smoked veil under the glass is, 0 to 100 (50 = as it was) */
 static int     cfg_round = 100;             /* v46: how round the corners are, 0 to 100 (100 = as they were, 0 = square) */
 static double  ui_round_k(void)
@@ -1577,7 +1577,6 @@ static void settings_save(void)
     fprintf(f, "# 1 = in a file with close key frames the Left/Right keys step 1 second and land exactly on their time, 0 = ffplay's own seek (to a key frame) always\nexact_seek = %d\n\n", cfg_exact_seek);
     fprintf(f, "# 1 = Open File, Open Folder and Add to Queue use the player's own picker, 0 = the system's dialog (needs zenity)\npicker = %d\n\n", cfg_picker);
     fprintf(f, "# The file picker: 1 = grid view, 0 = list; sorted by 0 name, 1 modified, 2 size; 1 = the other way round\npicker_grid = %d\npicker_sort = %d\npicker_desc = %d\n# 1 = the grid view shows pictures from the videos, the covers of songs and a picture from inside each folder, 0 = icons only (Ctrl+T in the picker)\npicker_thumbs = %d\n\n", cfg_pk_grid, cfg_pk_sort, cfg_pk_desc, cfg_pk_thumbs);
-    fprintf(f, "# 1 = letters are placed with sub-pixel accuracy (tighter, crisper titles), 0 = the older rendering\ncrisp_text = %d\n\n", cfg_crisp);
     fprintf(f, "# How strong the smoked veil under the glass is (0 to 100), and how round the corners are (0 = square, 100 = as before)\nglass_tint = %d\nroundness = %d\n\n", cfg_tint, cfg_round);
     fprintf(f, "# Color of the filled part of the bars: red green blue (0 to 255 each)\nbar_color = %d %d %d\n\n",
             cfg_bar_r, cfg_bar_g, cfg_bar_b);
@@ -3026,6 +3025,7 @@ static int q_repeat = 0;        /* 0 = off, 1 = repeat the queue, 2 = repeat the
 static int q_user_ended = 0;    /* 1 = the item that just ended was ended by the user, not by reaching its end */
 static int ui_played_any = 0;   /* v47: 1 once an item has really played (a queue of missing files does not quit the player) */
 static const void *volatile ui_failed_is = NULL;    /* v47: the stream whose file could not be opened */
+static const void *volatile ui_ended_is = NULL;     /* v63: the stream that reached the end of its file (that is not a failure) */
 
 /* v47: a local file that is not there any more (deleted after it was queued) */
 static int ui_file_missing(const char *path)
@@ -3746,11 +3746,7 @@ static TTF_Font *ui_font(int px)
         ui_ttf_state = -1;
         return NULL;
     }
-#ifdef TTF_HINTING_LIGHT_SUBPIXEL
-    TTF_SetFontHinting(ui_fonts[i].font, cfg_crisp ? TTF_HINTING_LIGHT_SUBPIXEL : TTF_HINTING_LIGHT);
-#else
-    TTF_SetFontHinting(ui_fonts[i].font, cfg_crisp ? TTF_HINTING_NORMAL : TTF_HINTING_LIGHT);
-#endif
+    TTF_SetFontHinting(ui_fonts[i].font, TTF_HINTING_LIGHT);    /* v63: slight hinting, the way desktop apps draw text: no extra sharpening */
     TTF_SetFontKerning(ui_fonts[i].font, 1);
     ui_fonts[i].px = px;
     return ui_fonts[i].font;
@@ -8890,15 +8886,15 @@ static char ui_tv_q[96];                        /* what was typed */
 static int ui_tv_searching = 0;                 /* the search box has been used (it shows a caret) */
 static int ui_tv_focus = 0;                     /* browsing: the queue number in focus */
 static double ui_tv_pos = 0.0, ui_tv_row = 0.0; /* browsing: the column and the row that glide to the focus */
-static UiTvSec ui_tv_sec[3];
+static UiTvSec ui_tv_sec[4];
 static int ui_tv_act = 0;                       /* searching: the section the keys move */
 static int64_t ui_tv_t = 0, ui_tv_born = 0, ui_tv_seen = 0;
 static UiTvHitRect ui_tvh[128];
 static int ui_tvh_n = 0;
 static double ui_tv_lift[4096];
 static int ui_tv_press = -1, ui_tv_pressec = -2, ui_tv_drag = 0, ui_tv_px = 0, ui_tv_py = 0;   /* the tile the mouse went down on */
-static int ui_tv_secy[3][2];                    /* the top and bottom of each section (for the wheel) */
-static const char * const ui_tv_title[3] = { "In this queue", "In Music", "In Videos" };
+static int ui_tv_secy[4][2];                    /* the top and bottom of each section (for the wheel) */
+static const char * const ui_tv_title[4] = { "In this queue", "In Videos", "In Music", "Elsewhere" };    /* v63 */
 
 /* ---- the folders: Music and Videos are read once in a thread, the search goes over what it has found ---- */
 typedef struct {
@@ -8906,7 +8902,9 @@ typedef struct {
     int n, cap;
 } UiTvLib;
 
-static UiTvLib ui_tv_lib[2];
+static UiTvLib ui_tv_lib[3];                    /* 0 = Music, 1 = Videos, 2 = elsewhere (v63) */
+static char ui_tv_skip[2][1024];                /* the Music and Videos folders: "Elsewhere" does not look in them again */
+static int ui_tv_visits = 0;                    /* how many directory entries the reading may still look at */
 static SDL_mutex *ui_tv_mu = NULL;
 static volatile int ui_tv_scan_state = 0;       /* 0 = not yet, 1 = reading, 2 = read */
 static int64_t ui_tv_scan_at = 0;
@@ -8945,12 +8943,12 @@ static void ui_tv_scan_dir(const char *dir, int kind, int depth, int *budget)
     char path[1024];
     struct stat st;
 
-    if (depth > 6 || *budget <= 0)
+    if (depth > 6 || *budget <= 0 || ui_tv_visits <= 0)
         return;
     d = opendir(dir);
     if (!d)
         return;
-    while ((e = readdir(d)) && *budget > 0) {
+    while (*budget > 0 && ui_tv_visits-- > 0 && (e = readdir(d))) {
         const char *dot;
         int k;
 
@@ -8960,14 +8958,23 @@ static void ui_tv_scan_dir(const char *dir, int kind, int depth, int *budget)
         if (stat(path, &st) != 0)
             continue;
         if (S_ISDIR(st.st_mode)) {
+            if (kind == 2 && (!strcmp(path, ui_tv_skip[0]) || !strcmp(path, ui_tv_skip[1])))
+                continue;                       /* v63: Music and Videos have their own sections */
             ui_tv_scan_dir(path, kind, depth + 1, budget);
         } else if (S_ISREG(st.st_mode) && (dot = strrchr(e->d_name, '.')) && dot[1]) {
-            for (k = 0; ui_tv_ext[kind][k]; k++)
-                if (!av_strcasecmp(dot + 1, ui_tv_ext[kind][k])) {
-                    ui_tv_lib_add(kind, path);
-                    (*budget)--;
-                    break;
-                }
+            int row;
+
+            for (row = 0; row < 2; row++) {     /* kind 2 (elsewhere) takes songs and videos */
+                if (kind != 2 && kind != row)
+                    continue;
+                for (k = 0; ui_tv_ext[row][k]; k++)
+                    if (!av_strcasecmp(dot + 1, ui_tv_ext[row][k])) {
+                        ui_tv_lib_add(kind, path);
+                        (*budget)--;
+                        row = 2;                /* found: leave both loops */
+                        break;
+                    }
+            }
         }
     }
     closedir(d);
@@ -9022,7 +9029,20 @@ static int ui_tv_scan_thread(void *arg)
             snprintf(dir, sizeof(dir), "%s", own);
         else
             ui_tv_userdir(k ? "XDG_VIDEOS_DIR" : "XDG_MUSIC_DIR", k ? "Videos" : "Music", dir, sizeof(dir));
+        snprintf(ui_tv_skip[k], sizeof(ui_tv_skip[k]), "%s", dir);
+        while (strlen(ui_tv_skip[k]) > 1 && ui_tv_skip[k][strlen(ui_tv_skip[k]) - 1] == '/')
+            ui_tv_skip[k][strlen(ui_tv_skip[k]) - 1] = 0;
+        ui_tv_visits = 300000;
         ui_tv_scan_dir(dir, k, 0, &budget);
+    }
+    {                                           /* v63: elsewhere = the rest of the home folder (hidden folders are left out) */
+        const char *home = getenv("HOME");
+        int budget2 = 20000;
+
+        if (home && home[0]) {
+            ui_tv_visits = 300000;
+            ui_tv_scan_dir(home, 2, 0, &budget2);
+        }
     }
     ui_tv_scan_state = 2;
     return 0;
@@ -9039,7 +9059,7 @@ static void ui_tv_scan_start(void)
     if (!ui_tv_mu || ui_tv_scan_state == 1 || (ui_tv_scan_state == 2 && now - ui_tv_scan_at < 60000000))
         return;                                 /* it is being read, or it was read less than a minute ago */
     SDL_LockMutex(ui_tv_mu);
-    for (k = 0; k < 2; k++) {
+    for (k = 0; k < 3; k++) {
         for (i = 0; i < ui_tv_lib[k].n; i++)
             av_free(ui_tv_lib[k].p[i]);
         ui_tv_lib[k].n = 0;
@@ -9330,7 +9350,7 @@ static void ui_tv_search(void)
     unsigned char hl[UI_TV_HL];
     int s, i, k, sc;
 
-    for (s = 0; s < 3; s++) {
+    for (s = 0; s < 4; s++) {
         ui_tv_sec_free(&ui_tv_sec[s]);
         ui_tv_sec[s].pos = 0.0;                 /* the best match is the one in focus, the others come after it */
         ui_tv_sec[s].target = 0;
@@ -9348,19 +9368,22 @@ static void ui_tv_search(void)
     }
     if (ui_tv_mu) {
         SDL_LockMutex(ui_tv_mu);
-        for (k = 0; k < 2; k++)
+        for (k = 0; k < 3; k++) {
+            static const int sec_of[3] = { 2, 1, 3 };       /* Music is the third section, Videos the second, Elsewhere the fourth */
+
             for (i = 0; i < ui_tv_lib[k].n; i++) {
                 ui_tv_name(ui_tv_lib[k].p[i], nm, sizeof(nm));
                 sc = ui_tv_match(nm, ui_tv_q, hl);
                 if (sc > 0)
-                    ui_tv_offer(&ui_tv_sec[1 + k], ui_tv_lib[k].p[i], sc, hl);
+                    ui_tv_offer(&ui_tv_sec[sec_of[k]], ui_tv_lib[k].p[i], sc, hl);
             }
+        }
         SDL_UnlockMutex(ui_tv_mu);
     }
-    for (s = 0; s < 3; s++)
+    for (s = 0; s < 4; s++)
         if (ui_tv_sec[s].n > 1)
             qsort(ui_tv_sec[s].h, ui_tv_sec[s].n, sizeof(UiTvHit), ui_tv_cmp);
-    for (s = 2; s >= 0; s--)
+    for (s = 3; s >= 0; s--)
         if (ui_tv_sec[s].n > 0)
             ui_tv_act = s;                      /* the keys start in the first section that has something */
 }
@@ -9418,7 +9441,7 @@ static void ui_tv_reset(VideoState *is, int64_t now)
 
     ui_tv_q[0] = 0;
     ui_tv_searching = 0;
-    for (s = 0; s < 3; s++)
+    for (s = 0; s < 4; s++)
         ui_tv_sec_free(&ui_tv_sec[s]);
     ui_tv_focus = av_clip(q_pos, 0, q_count - 1);
     ui_sf_pos = ui_sf_target = ui_tv_focus;     /* v57 */
@@ -9463,7 +9486,7 @@ static void ui_tv_exit(VideoState *is)
 
     ui_tv_q[0] = 0;
     ui_tv_searching = 0;
-    for (s = 0; s < 3; s++)
+    for (s = 0; s < 4; s++)
         ui_tv_sec_free(&ui_tv_sec[s]);
     ui_tvc_open = 0;
     ui_pv_request(NULL);
@@ -9513,6 +9536,21 @@ static void ui_sf_level(VideoState *is, int lvl)
     is->force_refresh = 1;
 }
 
+/* v63: out of the tiles of all over a video: the strip always comes first, never the full video window directly.
+   Returns 1 if it went to the strip. (The other way round stays: a hard swipe up from the full video goes straight to the tiles.) */
+static int ui_sf_step_back(VideoState *is)
+{
+    if (!ui_flow_video(is) || ui_sf_cur(is) != 2)
+        return 0;
+    if (ui_tv_q[0] || ui_tv_searching) {        /* the search ends first: the strip shows the queue */
+        ui_tv_q[0] = 0;
+        ui_tv_searching = 0;
+        ui_tv_search();
+    }
+    ui_sf_level(is, 1);
+    return 1;
+}
+
 /* A two finger swipe up or down over a video. One swipe moves one step (closed > strip > all tiles), a hard swipe up from the
    start goes straight to the tiles of all, a hard swipe down from the tiles closes the view. */
 static void ui_sf_swipe(VideoState *is, double ay)
@@ -9539,6 +9577,8 @@ static void ui_sf_swipe(VideoState *is, double ay)
     else if (acc <= -1.0)
         lvl = base - 1;
     lvl = av_clip(lvl, 0, 2);
+    if (base == 2 && lvl < 1)
+        lvl = 1;                                /* v63: from the tiles of all down is the strip, even for a hard swipe */
     if (lvl != cur)
         ui_sf_level(is, lvl);
 }
@@ -9570,6 +9610,11 @@ static void ui_tv_play(VideoState *is, const char *path)
             toggle_pause(is);
         return;
     }
+    if (idx >= 0 && idx == q_pos && ui_sf_step_back(is)) {      /* v63: from the tiles of all it goes to the strip first */
+        if (is->paused)
+            toggle_pause(is);
+        return;
+    }
     if (idx >= 0 && idx == q_pos) {             /* the one that plays: back to it */
         if (ui_flow_video(is))
             ui_tile_open(is);
@@ -9582,7 +9627,7 @@ static void ui_tv_play(VideoState *is, const char *path)
         queue_add(path);
         idx = q_count - 1;
     }
-    if (!ui_sf_active(is))                      /* v58: the Stripfilm view stays open while the next video starts */
+    if (!ui_sf_active(is) && !ui_sf_step_back(is))      /* v58: the Stripfilm view stays open while the next video starts (v63: also from the tiles of all) */
         ui_tv_exit(is);
     q_forced = idx;
     ui_end_current(is);
@@ -9609,7 +9654,7 @@ static void ui_tv_step(VideoState *is, int dcol, int drow)
 
         if (dcol && sec->n > 0)
             sec->target = av_clip(sec->target + dcol, 0, sec->n - 1);
-        for (s = ui_tv_act + drow; drow && s >= 0 && s < 3; s += drow)
+        for (s = ui_tv_act + drow; drow && s >= 0 && s < 4; s += drow)
             if (ui_tv_sec[s].n > 0) {
                 ui_tv_act = s;
                 break;
@@ -9651,12 +9696,13 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
             ui_tv_searching = 0;
             ui_tv_search();
             ui_tv_moving = 1;
-        } else {
+        } else if (!ui_sf_step_back(is)) {      /* v63: from the tiles of all over a video Esc goes to the strip */
             ui_tv_exit(is);
         }
         return 1;
     case SDLK_TAB:
-        ui_tv_exit(is);
+        if (!ui_sf_step_back(is))
+            ui_tv_exit(is);
         return 1;
     case SDLK_RETURN:
     case SDLK_KP_ENTER:
@@ -9736,7 +9782,7 @@ static int ui_tv_sec_at(int y)                  /* the section (while searching)
 {
     int s;
 
-    for (s = 0; s < 3; s++)
+    for (s = 0; s < 4; s++)
         if (y >= ui_tv_secy[s][0] && y < ui_tv_secy[s][1])
             return s;
     return -1;
@@ -10863,17 +10909,35 @@ static void ui_tv_draw(VideoState *is)
     box.x = (W - box.w) / 2;
     box.y = sm ? 34 : 44;
     {
-        int r, g, b, tx = box.x + 18, cy = box.y + box.h / 2, al = (int)(255 * ep * (vm ? 1.0 - ui_sf_p : 1.0));
+        int r, g, b, ipx = sm ? 16 : 18, tpx = sm ? 15 : 18, ix = box.x + (sm ? 12 : 16), tx = ix + ipx + 10, cy = box.y + box.h / 2;
+        int al = (int)(255 * ep * (vm ? 1.0 - ui_sf_p : 1.0)), fw = box.x + box.w - 18 - tx;      /* fw: the room the text has */
+        char vis[128];
         SDL_Rect caret;
 
-        if (!vm || ui_sf_p < 0.5)               /* v57: no search box in the Stripfilm layout */
-            ui_glass(&box, box.h / 2);
+        if (!vm || ui_sf_p < 0.5) {             /* v57: no search box in the Stripfilm layout */
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 16, 18, 24, al * 215 / 255);       /* v63: its own dark background: the picture behind never shows through */
+            ui_pill(&box);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, al * 24 / 255);     /* and a light veil on it, so the box stays defined */
+            ui_pill(&box);
+        }
         ui_tv_theme(&r, &g, &b);
+        ui_icon(UI_IC_SEARCH, ix, cy, ipx, 210, 210, 210, al);
         if (ui_tv_q[0]) {
-            ui_label(tx, cy, ui_tv_q, sm ? 15 : 18, 255, 255, 255, al);
-            caret.x = tx + ui_text_width(ui_tv_q, sm ? 15 : 18) + 2;
+            snprintf(vis, sizeof(vis), "%s", ui_tv_q);
+            while (vis[0] && ui_text_width(vis, tpx) > fw) {    /* too long for the box: the end of it stays in sight, with the caret */
+                int n = 1;
+
+                while ((vis[n] & 0xC0) == 0x80)
+                    n++;                        /* a whole character at a time */
+                memmove(vis, vis + n, strlen(vis + n) + 1);
+            }
+            ui_label(tx, cy, vis, tpx, 255, 255, 255, al);
+            caret.x = tx + ui_text_width(vis, tpx) + 2;
         } else {
-            ui_label(tx, cy, "Search the queue, your music and your videos", sm ? 15 : 17, 255, 255, 255, al * 68 / 100);
+            snprintf(vis, sizeof(vis), "%s", "Search the queue, your videos and your music");
+            ui_fit_text(vis, tpx, fw);          /* cut with ... when the box is narrow */
+            ui_label(tx, cy, vis, tpx, 255, 255, 255, al * 68 / 100);
             caret.x = tx - 2;
         }
         if (ui_tv_searching || ui_tv_q[0]) {    /* a caret in the bar color that blinks */
@@ -10931,11 +10995,11 @@ static void ui_tv_draw(VideoState *is)
         if (!sm && ep > 0.9 && W > 480)         /* a quiet hint under the rows */
             ui_label_c(W / 2, H - 46, "Type to search     Enter plays     Esc closes", 13, 255, 255, 255, (int)(95 * ep * (vm ? 1.0 - ui_sf_p : 1.0)));
     } else if (ui_tv_q[0]) {                    /* searching: three sections, each its own row of matches, the best one in focus */
-        double secH = (cbot - ctop) / 3.0;
+        double secH = (cbot - ctop) / 4.0;
         int sh = (int)av_clipd(FFMIN(secH - 24 - 30, W * 0.2), 36.0, 260.0), tr, tg, tb;     /* v38: bigger */
 
         ui_tv_theme(&tr, &tg, &tb);
-        for (s = 0; s < 3; s++) {
+        for (s = 0; s < 4; s++) {
             UiTvSec *sec = &ui_tv_sec[s];
             UiTvRow row;
             int top = ctop + (int)(secH * s), hy = top + 12, a = s == ui_tv_act ? 235 : 150;
@@ -10976,7 +11040,7 @@ static void ui_tv_draw(VideoState *is)
             row.pos = sec->pos;
             row.cx = (int)(W * 0.30);
             row.cy = top + 24 + sh / 2 + 6;
-            row.sw = (int)(sh * (s == 1 ? 1.22 : 1.75));            /* v39: music tiles sit closer */
+            row.sw = (int)(sh * (s == 2 ? 1.22 : 1.75));            /* v39: music tiles sit closer (v63: Music is the third section) */
             row.sh = sh;
             row.rowd = s == ui_tv_act ? 0.0 : 0.45;
             row.born = sec->born;
@@ -11098,7 +11162,7 @@ static int ui_tv_release(VideoState *is, int x, int y)
             ui_tv_play(is, q_items[av_clip(item, 0, q_count - 1)]);     /* a tap on the tile in focus plays it */
         else
             ui_tv_focus = item;                 /* a tap on another tile brings it into focus */
-    } else if (sec >= 0 && sec < 3) {
+    } else if (sec >= 0 && sec < 4) {
         if (item == ui_tv_sec[sec].target && ui_tv_act == sec)
             ui_tv_play(is, ui_tv_sec[sec].h[av_clip(item, 0, FFMAX(ui_tv_sec[sec].n - 1, 0))].path);
         else {
@@ -11118,7 +11182,7 @@ static const char *ui_tv_item_path(int sec, int item)
         return NULL;
     if (sec == -1)
         return item < q_count ? q_items[item] : NULL;
-    if (sec >= 0 && sec < 3 && item < ui_tv_sec[sec].n)
+    if (sec >= 0 && sec < 4 && item < ui_tv_sec[sec].n)
         return ui_tv_sec[sec].h[item].path;
     return NULL;
 }
@@ -11888,7 +11952,7 @@ static int ui_flow_release(VideoState *is, int x, int y)
 }
 
 /* A sideways swipe (two fingers on the touchpad): step through the queue */
-static void ui_flow_swipe(VideoState *is, SDL_Event *ev)
+static void ui_flow_swipe(VideoState *is, SDL_Event *ev, int vertical)
 {
     static double acc = 0.0;
     static int64_t last = 0;
@@ -11899,9 +11963,9 @@ static void ui_flow_swipe(VideoState *is, SDL_Event *ev)
     if (!ui_flow_on(is) || q_count < 2)
         return;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-    amount = ev->wheel.preciseX;
+    amount = vertical ? -ev->wheel.preciseY : ev->wheel.preciseX;      /* v63: vertical = a wheel turned down goes on to the next item */
 #else
-    amount = ev->wheel.x;
+    amount = vertical ? -ev->wheel.y : ev->wheel.x;
 #endif
     if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
         amount = -amount;
@@ -13529,10 +13593,11 @@ static int is_realtime(AVFormatContext *s)
 }
 
 /* this thread gets the stream from the disk or the network */
-/* The end of the last video of the queue, when the player does not quit: it stays on its last picture instead */
+/* The end of the last item of the queue (a video or a song), when the player does not quit: it pauses there instead of going to
+   the idle screen (v63). While repeating there is no last item. */
 static int ui_hold_last_wanted(VideoState *is)
 {
-    return !cfg_quit_when_done && is != xf_stream && is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+    return !cfg_quit_when_done && is != xf_stream && q_repeat == 0 &&
            q_count > 0 && q_pos >= 0 && q_pos < q_count && q_forced < 0 && queue_next() >= q_count;
 }
 
@@ -13824,6 +13889,7 @@ static int read_thread(void *arg)
                     if (!is->ui_held)
                         is->ui_hold = 1;        /* the main loop pauses on the last picture */
                 } else {
+                    ui_ended_is = is;           /* v63: a normal end, not a failed file */
                     ret = AVERROR_EOF;
                     goto fail;
                 }
@@ -13882,7 +13948,10 @@ static int read_thread(void *arg)
     if (ret != 0) {
         SDL_Event event;
 
-        ui_failed_is = is;                      /* v47: the main loop skips this item instead of repeating or quitting */
+        if (ui_ended_is == is)                  /* v63: it reached its end: not a failure, so repeat and quit-at-the-end see a played item */
+            ui_ended_is = NULL;
+        else
+            ui_failed_is = is;                  /* v47: the main loop skips this item instead of repeating or quitting */
         event.type = FF_QUIT_EVENT;
         event.user.data1 = is;
         SDL_PushEvent(&event);
@@ -20112,11 +20181,11 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
         ax = -ax;
         ay = -ay;
     }
-    if (FFABS(ax) > FFABS(ay)) {                /* a sideways swipe: along the tiles of the view, or through the queue */
+    if ((ay == 0.0 || !ui_wheel_zone(is)) && FFABS(ax) > FFABS(ay)) {   /* a sideways swipe: along the tiles of the view, or through the queue (v63: on the seek and volume bars an up or down swipe is never taken for a sideways one) */
         if (ui_tv_on(is))                       /* v39: also the view a pause opened */
             ui_tv_swipe_x(is, ax);
         else
-            ui_flow_swipe(is, ev);
+            ui_flow_swipe(is, ev, 0);
         is->force_refresh = 1;
         return;
     }
@@ -20125,6 +20194,11 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
     if (av_gettime_relative() < ui_tv_gest_until)
         return;                                 /* v39: the end of the swipe that opened or closed the view moves nothing */
     zone = ui_wheel_zone(is);
+    if (ui_pip && !zone && !ui_tv_on(is) && ui_flow_on(is) && q_count > 1) {    /* v63: the miniplayer's music tiles: a swipe over them moves through the queue */
+        ui_flow_swipe(is, ev, 1);
+        is->force_refresh = 1;
+        return;
+    }
     act = zone == 1 ? 0 : zone == 2 ? 1 : cfg_wheel;            /* 0 = seek, 1 = volume, 2 = navigation */
     if (act == 2 || (!zone && ui_tv_on(is))) {                  /* with the view open, a swipe down closes it */
         if (ui_sf_video(is)) {                  /* v57: over a video the swipes go closed > Stripfilm > all tiles */

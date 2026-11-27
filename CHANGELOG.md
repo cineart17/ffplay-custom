@@ -337,3 +337,4 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 
 ## Earlier
 - The first versions, before the patch queue numbering reached v4.
+- v63: text drawn naturally (no extra sharpening); tiles-view search box with its own background, a search icon and text that stays inside; search sections In this queue / In Videos / In Music / Elsewhere; exit at the end of the queue closes the window, off pauses at the end (songs too); repeat fixed (a normal end of file was counted as a failed file); miniplayer music tiles swipe through the queue; up/down wheel and two finger swipes on the seek and volume bars always adjust; tiles of all -> strip -> full video (never straight to the video)
