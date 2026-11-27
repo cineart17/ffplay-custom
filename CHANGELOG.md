@@ -6,6 +6,11 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v61
+
+- Stripfilm scrolling is as it was in v59 again: v60's spring and squeeze are gone, so tiles keep one fixed spacing and no longer overlap when you swipe fast.
+- Stripfilm: all strip tiles are one size again; v60's larger middle tile, the dimming of the others and the glow behind it are gone.
+
 ## v60
 
 - Transitions: a video can open straight into the small tiles without the Stripfilm view flashing past; between the two views, the large tile and the strip tiles glide into their places among the small tiles, and back.

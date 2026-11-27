@@ -1387,7 +1387,7 @@ static int ui_hov_x = -1, ui_hov_y = -1;    /* where the mouse is (for the previ
 static double ui_flow_hint = 0.0;           /* 0 to 1: the "Back to playing" hint */
 static double ui_tile_lift[32];             /* 0 to 1: how far each tile has risen under the mouse (by queue number) */
 
-/* v60: the Stripfilm view and its transitions (see ui_sf_draw). v57: the Stripfilm view and spring loaded scrolling. For a video, a two finger swipe up opens the Stripfilm view (the video plays
+/* v61: the strip scrolls like v59. v60: the Stripfilm view and its transitions (see ui_sf_draw). v57: the Stripfilm view and spring loaded scrolling. For a video, a two finger swipe up opens the Stripfilm view (the video plays
    on in a large tile, the queue is a strip of small tiles below it, the seek and volume bars sit between them). A swipe up once more,
    or a hard swipe from the start, opens the tiles of all. A swipe down goes back a step. Scrolling tiles squeeze together with the
    speed and slowly spring back. */
@@ -1409,8 +1409,6 @@ static double ui_lay = 0.0, ui_lay_v = 0.0;     /* v60: the layout (0 = the tile
 static int64_t ui_lv_t = 0;                     /* when they were last moved */
 static double ui_tile_p = 1.0;                  /* 0 to 1: how much of the tiles of all shows (over a video) */
 static SDL_Rect ui_sf_bt;                       /* v60: where the large tile of the Stripfilm view rests */
-static double ui_sf_v = 0.0;                    /* v60: how fast the strip moves (tiles a second); the strip is a spring */
-static double ui_sf_sq = 0.0;                   /* v60: 0 to 0.3: how much the speed squeezes the tiles of the strip together */
 static SDL_Rect ui_tv_slot_r[96];               /* v60: where the rows put the tiles of the queue (the strip glides into these) */
 static int ui_tv_slot_i[96], ui_tv_slot_n = 0;
 static int64_t ui_tv_slot_at = 0, ui_tv_play_at = 0;
@@ -9424,7 +9422,6 @@ static void ui_tv_reset(VideoState *is, int64_t now)
         ui_tv_sec_free(&ui_tv_sec[s]);
     ui_tv_focus = av_clip(q_pos, 0, q_count - 1);
     ui_sf_pos = ui_sf_target = ui_tv_focus;     /* v57 */
-    ui_sf_v = 0.0;
     ui_sf_touch = 0;
     ui_tv_dims(is, &R, &L);
     ui_tv_pos = ui_tv_focus % L;
@@ -10559,13 +10556,12 @@ static double ui_sf_smooth(double x)
    ui_sf_p = the layout (1 = Stripfilm), so (1 - ui_sf_p) is how far everything has glided towards the tiles of all.
    Drawn in two parts: this one is everything but the large tile (the title, the glass band, the strip, the tiles behind the large
    one). The large tile is drawn after the rows (ui_sf_draw_big), so it can move into the exact place of the small tile of the video.
-   The strip scrolls like the reference: a critically damped spring (it starts gently and never overshoots), the tile in the middle is
-   the largest and the others get smaller and dimmer the farther they are, a glow behind the middle one, and the tiles are squeezed
-   together by the speed and slowly spring back. */
+   v61: the strip scrolls like v59: one plain glide, tiles of one size at one fixed spacing. No spring and no squeeze, so the
+   tiles never overlap. */
 static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs, int hi)
 {
     int W = is->width, H = is->height, band_h, y0, y1, c0, k0, k1, K, dd, dn, tw, th, margin = 14;
-    double fa = ui_sf_p * ep, aw, ah, asp, bwid, bhgt, pitch0, pitch, sy, cy, half, cmin, cmax, bm = av_clipd(1.0 - ui_sf_p, 0.0, 1.0);
+    double fa = ui_sf_p * ep, aw, ah, asp, bwid, bhgt, pitch, sy, cy, half, cmin, cmax, bm = av_clipd(1.0 - ui_sf_p, 0.0, 1.0);
     SDL_Rect bt, r, band;
     char name[320];
 
@@ -10593,8 +10589,8 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
     ui_sf_bt = bt;
     cy = bt.y + bt.h / 2.0;
 
-    pitch0 = tw + 12;
-    half = (W / 2.0 - margin - tw * 0.8 / 2.0 - pitch0 * 0.10) / pitch0;   /* tiles from the middle of the window to the first tile, when the strip starts at the left */
+    pitch = tw + 12;                                    /* v61: the strip scrolls like v59 */
+    half = (W / 2.0 - margin - tw / 2.0) / pitch;       /* tiles from the middle of the window to the first tile, when the strip starts at the left */
     if (q_count - 1 <= 2.0 * half)
         cmin = cmax = (q_count - 1) / 2.0;              /* a short strip is centred */
     else {
@@ -10606,31 +10602,13 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
         ui_sf_target = av_clipd(floor(ui_sf_target + 0.5), cmin, cmax);
         ui_sf_touch = 0;
     }
-    {                                                   /* the strip is a critically damped spring: no sudden start, no overshoot */
-        double w = 11.0, sub = dt / 4.0, p0 = ui_sf_pos, vel, want;
-        int k;
-
-        for (k = 0; k < 4; k++) {
-            ui_sf_v += (w * w * (ui_sf_target - ui_sf_pos) - 2.0 * w * ui_sf_v) * sub;
-            ui_sf_pos += ui_sf_v * sub;
-        }
-        if (fabs(ui_sf_target - ui_sf_pos) < 0.003 && fabs(ui_sf_v) < 0.02) {
-            ui_sf_pos = ui_sf_target;
-            ui_sf_v = 0.0;
-        } else {
-            ui_tv_moving = 1;
-        }
-        vel = dt > 0.0 ? fabs(ui_sf_pos - p0) / dt : 0.0;
-        want = av_clipd(vel * 0.045, 0.0, 0.30);        /* the faster it moves the closer the tiles come ... */
-        ui_sf_sq += (want - ui_sf_sq) * (1.0 - exp(-dt * (want > ui_sf_sq ? 14.0 : 3.5)));    /* ... and they spring back slowly */
-        if (ui_sf_sq < 0.003 && want < 0.003)
-            ui_sf_sq = 0.0;
-        else
-            ui_tv_moving = 1;
-    }
+    ui_sf_pos += (ui_sf_target - ui_sf_pos) * (1.0 - exp(-dt * 9.0));
+    if (fabs(ui_sf_target - ui_sf_pos) < 0.003)
+        ui_sf_pos = ui_sf_target;
+    else
+        ui_tv_moving = 1;
     if (ui_sf_touch)
         ui_tv_moving = 1;
-    pitch = pitch0 * (1.0 - ui_sf_sq);
 
     /* the tiles of the queue that are before and after the video that plays, behind the large tile */
     for (dn = -1; dn <= 1; dn += 2) {
@@ -10667,10 +10645,9 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
     ui_glass_bar(&band);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-    /* the strip: no titles. The tile in the middle (ui_sf_pos) is the largest, the others get smaller and dimmer, and the far ones
-       first so the middle one is on top. When the view goes on to the tiles of all, each tile glides into its place there. */
+    /* the strip: no titles, every tile the same size. When the view goes on to the tiles of all, each tile glides into its place there. */
     sy = H - band_h / 2.0 + (1.0 - fa) * band_h;
-    K = FFMIN((int)(W / (2.0 * pitch0)) + 4, 40);
+    K = FFMIN((int)(W / (2.0 * pitch)) + 4, 40);
     c0 = av_clip((int)floor(ui_sf_pos + 0.5), 0, q_count - 1);
     k0 = FFMAX(c0 - K, 0);
     k1 = FFMIN(c0 + K, q_count - 1);
@@ -10679,17 +10656,14 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
 
         for (sd = -1; sd <= 1; sd += 2) {
             int i = c0 + sd * dd, play, al, md, ti;
-            double d, ad, sc, x, tcx, tcy, tbw, tbh, goal, lf, sl = 1.0;
+            double x, tcx, tcy, tbw, tbh, goal, lf, sl = 1.0;
             SDL_Rect slot;
 
             if ((dd == 0 && sd > 0) || i < k0 || i > k1)
                 continue;
             play = i == q_pos;
             ti = i % 4093;
-            d = i - ui_sf_pos;
-            ad = fabs(d);
-            sc = 1.0 - 0.17 * ui_sf_smooth(ad) - 0.02 * av_clipd(ad - 1.0, 0.0, 4.0);      /* the middle one is the largest */
-            x = W / 2.0 + d * pitch + (d < 0 ? -1.0 : 1.0) * FFMIN(ad, 1.0) * pitch0 * 0.10;     /* room around the middle one */
+            x = W / 2.0 + (i - ui_sf_pos) * pitch;
             if (x < -tw || x > W + tw)
                 continue;
             goal = (hs == -1 && hi == i) ? 1.0 : 0.0;   /* the tile under the mouse only brightens (and plays its preview): no pop */
@@ -10700,15 +10674,15 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
             else
                 ui_tv_moving = 1;
             ui_tv_lift[ti] = lf;
-            al = (int)((play ? 255.0 : 255.0 * av_clipd(1.0 - 0.07 * ad, 0.62, 1.0)) * ui_sf_p);
+            al = (int)((play ? 255 : 225) * ui_sf_p);
             al += (int)((255 * ui_sf_p - al) * lf);
-            md = play ? 255 : FFMIN(255, 228 - (int)(10 * FFMIN(ad, 3.0)) + (int)(27 * lf));
+            md = play ? 255 : 200 + (int)(55 * lf);
             if (ui_tv_drag && ui_tv_press == i && ui_tv_pressec == -1)
                 al = al / 3;                            /* the one that is being dragged leaves a faint place behind */
             tcx = x;
             tcy = sy;
-            tbw = tw * sc;
-            tbh = th * sc;
+            tbw = tw;
+            tbh = th;
             if (play) {
                 sl = 1.0 - av_clipd(bm * 3.0, 0.0, 1.0);       /* its place in the tiles of all is taken by the large tile */
             } else if (bm > 0.0) {
@@ -10726,8 +10700,6 @@ static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs
             al = (int)(al * sl);
             if (al <= 0)
                 continue;
-            if (ad < 0.6)                               /* a soft glow in the bar color behind the middle tile, like the reference */
-                ui_tv_glow(tcx, tcy, tbw * 0.95, tbh * 0.95, (int)(110 * (1.0 - ad / 0.6) * (al / 255.0)));
             if (ui_sf_put(q_items[i], play, tcx, tcy, tbw, tbh, 0, 0.0, al, md, 0, &r))
                 ui_tv_moving = 1;
             if (play) {                                 /* the mark of the video that plays: a white ring */
