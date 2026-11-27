@@ -174,7 +174,7 @@
          decoder_destroy(&is->auddec);
          swr_free(&is->swr_ctx);
          av_freep(&is->audio_buf1);
-@@ -1282,11 +1351,473 @@
+@@ -1282,11 +1351,475 @@
      av_free(is);
  }
  
@@ -220,8 +220,6 @@
 +   speed and slowly spring back. */
 +#define UI_SF_HARD 5.0                          /* a swipe up this long goes straight to the tiles of all (a normal one stops at the strip) */
 +#define UI_SF_SWIPE 1.5                         /* tiles of the strip for each notch of a sideways swipe */
-+#define UI_SQ_PITCH 0.12                        /* v58: at full speed the tiles come this much closer together ... */
-+#define UI_SQ_SIZE 0.12                         /* ... and shrink as much, so they never touch (it was 0.40 and 0.12: they overlapped) */
 +static int ui_sf_lift_px = 0;                   /* v58: 1 = the Stripfilm view is up and the bars are drawn inside its large tile */
 +static SDL_Rect ui_sf_box;                      /* v58: the large tile of the Stripfilm view: the bars sit in its bottom */
 +static int ui_sf_tw = 100, ui_sf_th = 64;       /* v58: a tile of the strip (a tile that is dragged keeps this size) */
@@ -229,7 +227,11 @@
 +static double ui_sf_p = 0.0;                    /* 0 to 1: how far the view has moved into the Stripfilm layout */
 +static double ui_sf_pos = 0.0, ui_sf_target = 0.0;      /* the strip: the queue number in the middle (the video that plays does not change) */
 +static int64_t ui_sf_touch = 0;                 /* when the strip was last moved by hand */
-+static double ui_sq = 0.0;                      /* 0 to 1: how much the scrolling tiles are squeezed together right now */
++static double ui_lv = 0.0, ui_lv_v = 0.0;       /* v59: the level of the view, smoothly: 0 = the full video, 1 = the Stripfilm view, 2 = the tiles of all (and its speed) */
++static int64_t ui_lv_t = 0;                     /* when it was last moved */
++static double ui_tile_p = 1.0;                  /* 0 to 1: how far the tiles of all have come in (over a video) */
++static SDL_Rect ui_tv_play_rect;                /* where the small tile of the playing video was drawn last: the large tile moves into it */
++static int ui_tv_play_w = 0, ui_tv_play_h = 0;  /* the window size that was for */
 +static int64_t ui_tile_born = 0, ui_tile_seen = 0;      /* when the queue view opened */
 +static int ui_tp_on = 0;                    /* 1 = a tile preview is waiting to start or is playing: keep drawing */
 +static int64_t ui_prog_until = 0;           /* until then a change of the window size is our own, not the user's */
@@ -648,7 +650,7 @@
      if (renderer)
          SDL_DestroyRenderer(renderer);
      if (window)
-@@ -1298,7 +1829,7 @@
+@@ -1298,7 +1831,7 @@
          printf("\n");
      SDL_Quit();
      av_log(NULL, AV_LOG_QUIET, "%s", "");
@@ -657,7 +659,7 @@
  }
  
  static void sigterm_handler(int sig)
-@@ -1318,6 +1849,119 @@
+@@ -1318,6 +1851,119 @@
      default_height = rect.h;
  }
  
@@ -777,7 +779,7 @@
  static int video_open(VideoState *is)
  {
      int w,h;
-@@ -1329,11 +1973,42 @@
+@@ -1329,11 +1975,42 @@
          window_title = input_filename;
      SDL_SetWindowTitle(window, window_title);
  
@@ -825,7 +827,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +2016,9908 @@
+@@ -1341,19 +2018,9935 @@
      return 0;
  }
  
@@ -1568,7 +1570,7 @@
 +static int64_t q_sleep_end = 0;         /* when the sleep timer runs out (0 = no timer) */
 +static int ui_sleep_sel = 0;            /* the timer choice: 0 off, 1 end of track, 2 to 5 = 5, 10, 30, 60 minutes */
 +static int ui_user_skip = 0;            /* 1 = the item was ended by the user (n, p, a click), not by reaching its end */
-+
+ 
 +static void queue_seed(void)
 +{
 +    static int seeded = 0;
@@ -2726,7 +2728,7 @@
 +    float px[3] = { x0, x1, x2 }, py[3] = { y0, y1, y2 };
 +    float ymin = FFMIN3(y0, y1, y2), ymax = FFMAX3(y0, y1, y2), y;
 +    int i;
- 
++
 +    for (y = ymin; y <= ymax + 0.0001f; y += 0.7f) {
 +        float lo = 1e9f, hi = -1e9f;
 +
@@ -8214,7 +8216,6 @@
 +    ui_tv_focus = av_clip(q_pos, 0, q_count - 1);
 +    ui_sf_pos = ui_sf_target = ui_tv_focus;     /* v57 */
 +    ui_sf_touch = 0;
-+    ui_sq = 0.0;
 +    ui_tv_dims(is, &R, &L);
 +    ui_tv_pos = ui_tv_focus % L;
 +    ui_tv_row = ui_tv_focus / L;
@@ -9036,7 +9037,7 @@
 +{
 +    UiTvOrd ord[48];
 +    int no = 0, k0, k1, c, o, W = is->width, vm = ui_flow_vmode, K;
-+    double pitch = R->sw * 0.95 * (1.0 - UI_SQ_PITCH * ui_sq);     /* v57: the tiles squeeze together while they scroll */
++    double pitch = R->sw * 1.08;
 +
 +    K = (int)(W / (2.0 * pitch)) + 3;
 +    k0 = FFMAX((int)floor(R->pos) - K, 0);
@@ -9072,8 +9073,8 @@
 +            continue;
 +        play = ui_tv_is_playing(path);
 +        sc = 1.0 - 0.26 * (d < 1.0 ? d * d * (3.0 - 2.0 * d) : 1.0) - 0.035 * FFMIN(FFMAX(d - 1.0, 0.0), 4.0);
-+        bw = R->sw * sc * (1.0 - UI_SQ_SIZE * ui_sq);
-+        bh = R->sh * sc * (1.0 - UI_SQ_SIZE * ui_sq);
++        bw = R->sw * sc;
++        bh = R->sh * sc;
 +        asp = (play && vm && ui_live_ok && ui_live_rect.h > 0) ? (double)ui_live_rect.w / ui_live_rect.h : ui_cov_aspect(path);
 +        ptex = play ? NULL : ui_pv_get(path, &pw, &ph);         /* v39: the picture that plays under the mouse */
 +        if (ptex && asp <= 0.0)
@@ -9108,7 +9109,7 @@
 +            al = (int)(al * ep);                /* the other tiles fade in while the video shrinks */
 +        al = (int)(al * en);
 +        if (vm)
-+            al = (int)(al * (1.0 - ui_sf_p));   /* v57: the tiles fade while the Stripfilm layout comes in */
++            al = (int)(al * ui_tile_p);         /* v59: the tiles come in with the second step (Stripfilm -> tiles of all) */
 +        ti = (int)(((R->sec + 1) * 1031 + item) % 4093);        /* v39: one slot for each tile */
 +        goal = (hov_sec == R->sec && hov_item == item) ? 1.0 : 0.0;
 +        lf = ui_tv_lift[ti];
@@ -9125,7 +9126,7 @@
 +        tile.w = nw;
 +        tile.h = nh;
 +        tile.x = (int)x - nw / 2;
-+        tile.y = R->cy + (int)((1.0 - ease) * 36.0) - nh / 2 - (int)(6 * lf);
++        tile.y = R->cy + (int)((1.0 - ease) * 36.0) + (vm ? (int)((1.0 - ui_tile_p) * 36.0) : 0) - nh / 2 - (int)(6 * lf);
 +        md = FFMIN(255, md + (int)(40 * lf));
 +        if (tile.x + tile.w < -20 || tile.x > W + 20)
 +            continue;
@@ -9143,6 +9144,9 @@
 +                lr.w = ui_live_rect.w + (int)((tile.w - ui_live_rect.w) * ep);
 +                lr.h = ui_live_rect.h + (int)((tile.h - ui_live_rect.h) * ep);
 +            }
++            ui_tv_play_rect = tile;             /* v59: the large tile of the Stripfilm view moves into this one */
++            ui_tv_play_w = W;
++            ui_tv_play_h = is->height;
 +            ui_flow_quad_round(ui_live_tex, &lr, al, md, 0.0, (int)(FFMIN(lr.w, lr.h) / 11.0 * ep));
 +        } else if (ptex) {                      /* it plays under the mouse */
 +            ui_flow_quad_round(ptex, &tile, al, md, 0.0, FFMIN(tile.w, tile.h) / 11);
@@ -9280,24 +9284,25 @@
 +    }
 +}
 +
-+/* v58: the Stripfilm view: the video that plays in a large tile (the previous and next tiles peek out behind it) with the seek and
-+   volume bars in its bottom and its title under it, and the whole queue as a strip of small tiles on a flat dark frosted band at the
-+   bottom of the window. The strip has one fixed height, its tiles are square and never change size under the mouse. */
++/* v59: the Stripfilm view: the video that plays in a large tile with its title above it and the seek and volume bars in its bottom, and
++   the whole queue as a strip of small tiles on a flat dark frosted band at the bottom of the window. The strip has one fixed height, its
++   tiles are square and never change size under the mouse. It starts at the far left when it is longer than the window, and is centred
++   when it is short. The large tile moves into the small tile of the video when the view goes on to the tiles of all. */
 +static void ui_sf_draw(VideoState *is, double dt, int64_t now, double ep, int hs, int hi)
 +{
-+    int W = is->width, H = is->height, band_h, y0, y1, c0, k0, k1, K, n, dn, tw, th;
-+    double fa = ui_sf_p * ep, aw, ah, asp, bwid, bhgt, pitch, sc, sy, cy;
++    int W = is->width, H = is->height, band_h, y0, y1, c0, k0, k1, K, n, dn, tw, th, margin = 14;
++    double fa = ui_sf_p * ep, aw, ah, asp, bwid, bhgt, pitch, sy, cy, half, cmin, cmax, m;
 +    SDL_Rect bt, r, band;
 +    char name[320];
 +
-+    th = H < 460 ? 52 : 64;                             /* the strip has one fixed height, whatever the window */
++    th = H < 460 ? 60 : 92;                             /* the strip has one fixed height, whatever the window */
 +    tw = (int)(th * 1.6);
 +    ui_sf_tw = tw;
 +    ui_sf_th = th;
-+    band_h = th + 20;
++    band_h = th + 24;
 +    ui_sf_lift_px = fa > 0.02 ? 1 : 0;                  /* the bars are drawn inside the large tile (ui_sf_box) */
-+    y0 = H < 460 ? 40 : 56;
-+    y1 = H - band_h - 44;                               /* the large tile ends above its title, which is above the strip */
++    y0 = H < 460 ? 46 : 52;                             /* the title is above the large tile, so the tile is as high as it can be */
++    y1 = H - band_h - 18;
 +    ah = FFMAX(y1 - y0, 40);
 +    aw = W * 0.76;
 +    asp = (ui_live_ok && ui_live_rect.h > 0) ? (double)ui_live_rect.w / ui_live_rect.h : 16.0 / 9.0;
@@ -9312,13 +9317,23 @@
 +    bt.x = W / 2 - bt.w / 2;
 +    bt.y = y0 + (int)((ah - bhgt) / 2.0);
 +    cy = bt.y + bt.h / 2.0;
++    m = av_clipd(ui_lv - 1.0, 0.0, 1.0);                /* how far the large tile has gone on into the tiles of all */
++    m = m * m * (3.0 - 2.0 * m);
 +
-+    ui_sf_target = av_clipd(ui_sf_target, 0.0, FFMAX(q_count - 1, 0));
++    pitch = tw + 12;
++    half = (W / 2.0 - margin - tw / 2.0) / pitch;       /* tiles from the middle of the window to the first tile, when the strip starts at the left */
++    if (q_count - 1 <= 2.0 * half)
++        cmin = cmax = (q_count - 1) / 2.0;              /* a short strip is centred */
++    else {
++        cmin = half;                                    /* a long one starts at the far left, even at its first item ... */
++        cmax = q_count - 1 - half;                      /* ... and ends at the far right */
++    }
++    ui_sf_target = av_clipd(ui_sf_target, cmin, cmax);
 +    if (ui_sf_touch && now - ui_sf_touch > 180000) {    /* the hand has left: the strip settles on a whole tile */
-+        ui_sf_target = floor(ui_sf_target + 0.5);
++        ui_sf_target = av_clipd(floor(ui_sf_target + 0.5), cmin, cmax);
 +        ui_sf_touch = 0;
 +    }
-+    ui_sf_pos += (ui_sf_target - ui_sf_pos) * (1.0 - exp(-dt * 13.0));       /* tighter than before */
++    ui_sf_pos += (ui_sf_target - ui_sf_pos) * (1.0 - exp(-dt * 9.0));
 +    if (fabs(ui_sf_target - ui_sf_pos) < 0.003)
 +        ui_sf_pos = ui_sf_target;
 +    else
@@ -9342,9 +9357,10 @@
 +        }
 +    }
 +
-+    /* the video that plays, in the large tile (on its way from the full window while the view opens) */
++    /* the video that plays, in the large tile (on its way from the full window while the view opens, and into its small tile when it goes on) */
 +    if (ui_live_ok && ui_live_tex) {
-+        SDL_Rect lr = bt;
++        SDL_Rect lr = bt, to;
++        int la = (int)(255 * (ui_lv <= 1.0 ? ui_sf_p : 1.0 - m));
 +
 +        if (ep < 1.0) {
 +            lr.x = ui_live_rect.x + (int)((bt.x - ui_live_rect.x) * ep);
@@ -9352,10 +9368,23 @@
 +            lr.w = ui_live_rect.w + (int)((bt.w - ui_live_rect.w) * ep);
 +            lr.h = ui_live_rect.h + (int)((bt.h - ui_live_rect.h) * ep);
 +        }
++        if (m > 0.0) {
++            if (ui_tv_play_w == W && ui_tv_play_h == H) {
++                to = ui_tv_play_rect;
++            } else {                                    /* no small tile is known yet: shrink towards the middle */
++                to.w = (int)(bt.w * 0.6);
++                to.h = (int)(bt.h * 0.6);
++                to.x = W / 2 - to.w / 2;
++                to.y = bt.y + (bt.h - to.h) / 2;
++            }
++            lr.x += (int)((to.x - lr.x) * m);
++            lr.y += (int)((to.y - lr.y) * m);
++            lr.w += (int)((to.w - lr.w) * m);
++            lr.h += (int)((to.h - lr.h) * m);
++        }
 +        ui_tv_glow(bt.x + bt.w / 2.0, bt.y + bt.h / 2.0, bt.w * 0.62, bt.h * 0.75, (int)(110 * fa * ep));
-+        ui_tile_shadow(ui_live_tex, &lr, (int)(255 * ui_sf_p), 0.0, 0);
-+        ui_flow_quad_round(ui_live_tex, &lr, (int)(255 * ui_sf_p), 255, 0.0, 0);        /* square corners */
-+        r = bt;
++        ui_tile_shadow(ui_live_tex, &lr, la, 0.0, 0);
++        ui_flow_quad_round(ui_live_tex, &lr, la, 255, 0.0, 0);          /* square corners */
 +        ui_sf_box = lr;                                 /* the bars sit in the bottom of this */
 +    } else {
 +        ui_sf_put(q_items[q_pos], 0, W / 2.0, cy, bt.w, bt.h, 0, 0.0, (int)(255 * ui_sf_p), 255, 1, &r);
@@ -9368,10 +9397,10 @@
 +        ui_tvh_n++;
 +    }
 +
-+    /* the title of the video that plays, under its large tile */
++    /* the title of the video that plays, above its large tile */
 +    ui_tv_name(q_items[q_pos], name, sizeof(name));
 +    ui_fit_text(name, 18, bt.w);
-+    ui_label_c(W / 2, bt.y + bt.h + 24, name, 18, 255, 255, 255, (int)(255 * fa));
++    ui_label_c(W / 2, bt.y - 20, name, 18, 255, 255, 255, (int)(255 * fa));
 +
 +    /* the band behind the strip: flat dark frosted glass, edge to edge, like the one behind the seek and volume bars */
 +    band.x = 0;
@@ -9381,9 +9410,7 @@
 +    ui_glass_bar(&band);
 +    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 +
-+    /* the strip: no titles; the tiles come a little closer together and shrink by the same amount the faster it moves */
-+    pitch = (tw + 12) * (1.0 - UI_SQ_PITCH * ui_sq);
-+    sc = 1.0 - UI_SQ_PITCH * ui_sq;
++    /* the strip: no titles; the tile in the middle of it (ui_sf_pos) is where the strip has been moved to */
 +    sy = H - band_h / 2.0 + (1.0 - fa) * band_h;
 +    K = FFMIN((int)(W / (2.0 * pitch)) + 3, 40);
 +    c0 = av_clip((int)floor(ui_sf_pos + 0.5), 0, q_count - 1);
@@ -9408,7 +9435,7 @@
 +        md = play ? 255 : 200 + (int)(55 * lf);
 +        if (ui_tv_drag && ui_tv_press == i && ui_tv_pressec == -1)
 +            al = al / 3;                                /* the one that is being dragged leaves a faint place behind */
-+        if (ui_sf_put(q_items[i], play, x, sy, tw * sc, th * sc, 0, 0.0, al, md, 0, &r))
++        if (ui_sf_put(q_items[i], play, x, sy, tw, th, 0, 0.0, al, md, 0, &r))
 +            ui_tv_moving = 1;
 +        if (play) {                                     /* the mark of the video that plays: a white ring */
 +            SDL_Rect rg = { r.x - 4, r.y - 4, r.w + 8, r.h + 8 };
@@ -9446,43 +9473,45 @@
 +    ui_tv_moving = 0;
 +    dt = ui_tv_t ? av_clipd((now - ui_tv_t) / 1000000.0, 0.0, 0.1) : 0.0;
 +    ui_tv_t = now;
-+    if (vm) {                                   /* the video shrinks into its tile (or grows back): the same animation as before */
-+        double want = ui_vflow ? 1.0 : 0.0, dtv = ui_vflow_t ? av_clipd((now - ui_vflow_t) / 1000000.0, 0.0, 0.1) : 0.0;
++    if (vm) {                                   /* v59: one smooth move through the levels: 0 = the full video, 1 = Stripfilm, 2 = the tiles of all */
++        double lt = !ui_vflow ? 0.0 : (ui_sf_mode && !ui_tv_q[0]) ? 1.0 : 2.0, dtv, a, b, w = 12.0, sub;
++        int k;
 +
-+        ui_vflow_t = now;
-+        ui_vflow_p += (want - ui_vflow_p) * (1.0 - exp(-dtv * (want > 0.5 ? 8.0 : 14.0)));      /* growing back is quicker */
-+        if (fabs(want - ui_vflow_p) < (want > 0.5 ? 0.004 : 0.03))      /* v43: the last part of the way back is not seen: it ends there */
-+            ui_vflow_p = want;
-+        ui_vflow_ep = ui_vflow_p * ui_vflow_p * (3.0 - 2.0 * ui_vflow_p);
++        if (now - ui_lv_t > 350000) {           /* the view has just opened: start from where the video flow is */
++            ui_lv = ui_vflow_p > 0.999 ? ((ui_sf_mode && !ui_tv_q[0]) ? 1.0 : 2.0) : ui_vflow_p;
++            ui_lv_v = 0.0;
++        }
++        dtv = ui_lv_t ? av_clipd((now - ui_lv_t) / 1000000.0, 0.0, 0.1) : 0.0;
++        ui_lv_t = now;
++        sub = dtv / 4.0;
++        for (k = 0; k < 4; k++) {               /* a critically damped spring: it starts gently, never overshoots, and the middle level is passed
++                                                   without stopping, so each step builds on the one before (a change of mind stays smooth too) */
++            ui_lv_v += (w * w * (lt - ui_lv) - 2.0 * w * ui_lv_v) * sub;
++            ui_lv += ui_lv_v * sub;
++        }
++        ui_lv = av_clipd(ui_lv, 0.0, 2.0);
++        if (fabs(lt - ui_lv) < 0.003 && fabs(ui_lv_v) < 0.05) {
++            ui_lv = lt;
++            ui_lv_v = 0.0;
++        } else {
++            ui_tv_moving = 1;
++        }
++        a = av_clipd(ui_lv, 0.0, 1.0);          /* 0 to 1: full video -> Stripfilm */
++        b = av_clipd(ui_lv - 1.0, 0.0, 1.0);    /* 0 to 1: Stripfilm -> tiles of all */
++        b = b * b * (3.0 - 2.0 * b);
++        ui_vflow_p = a;
++        ui_vflow_ep = a * a * (3.0 - 2.0 * a);
 +        ep = ui_vflow_ep;
-+        if (ui_vflow_p != want)
-+            ui_tv_moving = 1;
++        ui_sf_p = ui_lv <= 1.0 ? ep : 1.0 - b;
++        ui_tile_p = b;
++        ui_vflow_t = now;
++    } else {
++        ui_sf_p = 0.0;
++        ui_tile_p = 1.0;
++        ui_lv_t = 0;
 +    }
-+    {                                           /* v57: the move between the Stripfilm layout and the tiles of all, and the squeeze of scrolling tiles */
-+        double want = (vm && ui_sf_mode) ? 1.0 : 0.0, cur, v = 0.0, tgt;
-+        static double prev = 0.0;
-+        static int prev_kind = -1;
-+        int kind = (vm && ui_sf_mode) ? 0 : ui_tv_q[0] ? 1 : 2;
-+
-+        ui_sf_p += (want - ui_sf_p) * (1.0 - exp(-dt * 10.0));
-+        if (fabs(want - ui_sf_p) < 0.01)
-+            ui_sf_p = want;
-+        else
-+            ui_tv_moving = 1;
-+        if (!vm || ui_sf_p <= 0.004)
-+            ui_sf_lift_px = 0;
-+        cur = kind == 0 ? ui_sf_pos : kind == 1 ? ui_tv_sec[ui_tv_act].pos : ui_tv_pos;
-+        if (dt > 0.0 && kind == prev_kind && now - ui_tv_born > 150000)
-+            v = fabs(cur - prev) / dt;              /* tiles a second */
-+        prev = cur;
-+        prev_kind = kind;
-+        tgt = av_clipd((v - 2.0) / 16.0, 0.0, 1.0);
-+        ui_sq += (tgt - ui_sq) * (1.0 - exp(-dt * (tgt > ui_sq ? 18.0 : 6.0)));    /* quick to squeeze, slow to spring back */
-+        if (ui_sq < 0.004 && tgt <= 0.0)
-+            ui_sq = 0.0;
-+        else
-+            ui_tv_moving = 1;
-+    }
++    if (!vm || ui_sf_p <= 0.004)
++        ui_sf_lift_px = 0;
 +    if (q_pos != last_q) {                      /* a new item started: the focus goes to it */
 +        last_q = q_pos;
 +        if (!ui_tv_q[0])
@@ -9544,8 +9573,8 @@
 +        int r;
 +
 +        sh = av_clipd(FFMIN(FFMIN(rp * 0.74, rp - 46.0), W * 0.24), 40.0, 340.0);      /* v38: bigger */
-+        ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 13.0));
-+        ui_tv_row += (rw - ui_tv_row) * (1.0 - exp(-dt * 13.0));
++        ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 9.0));
++        ui_tv_row += (rw - ui_tv_row) * (1.0 - exp(-dt * 9.0));
 +        if (fabs(col - ui_tv_pos) < 0.003)
 +            ui_tv_pos = col;
 +        else
@@ -9603,7 +9632,7 @@
 +                ui_label(34 + ui_text_width(head, sm ? 14 : 16) + 10, hy, cnt, sm ? 12 : 13, 255, 255, 255, 110);
 +            }
 +            sec->target = av_clip(sec->target, 0, FFMAX(sec->n - 1, 0));
-+            sec->pos += (sec->target - sec->pos) * (1.0 - exp(-dt * 13.0));
++            sec->pos += (sec->target - sec->pos) * (1.0 - exp(-dt * 9.0));
 +            if (fabs(sec->target - sec->pos) < 0.003)
 +                sec->pos = sec->target;
 +            else
@@ -10740,7 +10769,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +12020,14 @@
+@@ -1456,9 +12049,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -10755,7 +10784,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +12063,11 @@
+@@ -1494,9 +12092,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -10770,7 +10799,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +12328,30 @@
+@@ -1757,6 +12357,30 @@
      return 0;
  }
  
@@ -10801,7 +10830,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +12367,11 @@
+@@ -1772,6 +12396,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -10813,7 +10842,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +12641,11 @@
+@@ -2041,6 +12670,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -10825,7 +10854,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +13035,7 @@
+@@ -2430,7 +13064,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -10834,7 +10863,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +13056,24 @@
+@@ -2451,12 +13085,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -10861,7 +10890,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +13286,8 @@
+@@ -2669,7 +13315,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -10871,7 +10900,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +13352,13 @@
+@@ -2734,6 +13381,13 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -10885,7 +10914,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +13474,7 @@
+@@ -2849,6 +13503,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -10893,7 +10922,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +13572,10 @@
+@@ -2946,6 +13601,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -10904,7 +10933,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +13595,19 @@
+@@ -2965,6 +13624,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -10924,7 +10953,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +13643,13 @@
+@@ -3000,8 +13672,13 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -10940,7 +10969,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3057,6 +13705,7 @@
+@@ -3057,6 +13734,7 @@
      if (ret != 0) {
          SDL_Event event;
  
@@ -10948,7 +10977,7 @@
          event.type = FF_QUIT_EVENT;
          event.user.data1 = is;
          SDL_PushEvent(&event);
-@@ -3111,8 +13760,10 @@
+@@ -3111,8 +13789,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -10960,7 +10989,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +13775,7 @@
+@@ -3124,7 +13804,7 @@
      return is;
  }
  
@@ -10969,7 +10998,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +13854,83 @@
+@@ -3203,13 +13883,83 @@
  }
  
  
@@ -11054,7 +11083,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +13942,4901 @@
+@@ -3221,24 +13971,4901 @@
      }
  }
  
@@ -15959,7 +15988,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +18864,1024 @@
+@@ -3266,6 +18893,1024 @@
  }
  
  /* handle an event sent by the GUI */
@@ -16984,7 +17013,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +19890,104 @@
+@@ -3274,86 +19919,104 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
@@ -17139,7 +17168,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +20004,86 @@
+@@ -3370,40 +20033,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -17238,7 +17267,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +20120,23 @@
+@@ -3440,9 +20149,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -17262,7 +17291,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +20146,21 @@
+@@ -3452,9 +20175,21 @@
              }
              break;
          case SDL_QUIT:
@@ -17285,7 +17314,7 @@
          default:
              break;
          }
-@@ -3524,17 +20230,70 @@
+@@ -3524,17 +20259,70 @@
      return 0;
  }
  
@@ -17363,7 +17392,7 @@
  
      return 0;
  }
-@@ -3678,13 +20437,7 @@
+@@ -3678,13 +20466,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -17378,7 +17407,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +20453,21 @@
+@@ -3700,6 +20482,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -17400,7 +17429,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +20485,9 @@
+@@ -3717,10 +20514,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -17412,7 +17441,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +20495,7 @@
+@@ -3728,7 +20524,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -17421,7 +17450,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +20509,103 @@
+@@ -3742,15 +20538,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

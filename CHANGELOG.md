@@ -1,5 +1,13 @@
 # Changelog
 
+## v59
+
+- Scrolling: the spring-loaded squeeze is gone; the tiles scroll as they did before the Stripfilm view (same spacing, same glide).
+- Stripfilm: a long strip starts at the far left (even at its first item) and ends at the far right; a short one is centred.
+- Stripfilm: a taller strip; the large tile sits higher and its title is above it.
+- Transitions: full video, Stripfilm and the tiles of all are one smooth motion on a spring; each step builds on the one before, and a change of mind in the middle stays smooth.
+- The large tile moves into the small tile of the playing video when the view goes on to the tiles of all (and back); the tiles rise into place and the strip slides away.
+
 ## v58
 
 - Stripfilm: the strip sits on a flat, dark frosted band, edge to edge, with one fixed height.
