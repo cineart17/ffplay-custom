@@ -15978,6 +15978,14 @@ static int ui_pk_thumb_namecmp(const void *a, const void *b)
     return av_strcasecmp(*(char * const *)a, *(char * const *)b);
 }
 
+/* v62: out = dir/name, cut to fit */
+static void ui_pk_join(char *out, size_t size, const char *dir, const char *name)
+{
+    av_strlcpy(out, dir, size);
+    av_strlcat(out, "/", size);
+    av_strlcat(out, name, size);
+}
+
 /* A picture for a folder: the first video in it, else the first song that has a cover, else the same one folder down */
 static int ui_pk_thumb_folder(const char *dir, int depth, int *tries, uint8_t **out, int *ow, int *oh)
 {
@@ -15996,7 +16004,7 @@ static int ui_pk_thumb_folder(const char *dir, int depth, int *tries, uint8_t **
 
         if (de->d_name[0] == '.')
             continue;
-        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+        ui_pk_join(full, sizeof(full), dir, de->d_name);
         if (stat(full, &st) != 0)
             continue;
         if (S_ISDIR(st.st_mode)) {
@@ -16024,15 +16032,15 @@ static int ui_pk_thumb_folder(const char *dir, int depth, int *tries, uint8_t **
     if (ns > 1)
         qsort(sub, ns, sizeof(*sub), ui_pk_thumb_namecmp);
     for (i = 0; i < nv && !ok && *tries < 6; i++, (*tries)++) {
-        snprintf(full, sizeof(full), "%s/%s", dir, vid[i]);
+        ui_pk_join(full, sizeof(full), dir, vid[i]);
         ok = ui_pk_thumb_decode(full, out, ow, oh);
     }
     for (i = 0; i < na && !ok && *tries < 6; i++, (*tries)++) {
-        snprintf(full, sizeof(full), "%s/%s", dir, aud[i]);
+        ui_pk_join(full, sizeof(full), dir, aud[i]);
         ok = ui_pk_thumb_decode(full, out, ow, oh);
     }
     for (i = 0; i < ns && !ok && depth < 2 && *tries < 6; i++) {
-        snprintf(full, sizeof(full), "%s/%s", dir, sub[i]);
+        ui_pk_join(full, sizeof(full), dir, sub[i]);
         ok = ui_pk_thumb_folder(full, depth + 1, tries, out, ow, oh);
     }
     for (i = 0; i < nv; i++)
@@ -16218,7 +16226,7 @@ static int ui_pk_thumb_draw(const UiPkEnt *e, const SDL_Rect *box)
         if (ui_pk_nwant < UI_PK_TQ) {
             ui_pk_want[ui_pk_nwant].key = key;
             ui_pk_want[ui_pk_nwant].dir = e->dir;
-            snprintf(ui_pk_want[ui_pk_nwant].path, sizeof(ui_pk_want[0].path), "%s", path);
+            av_strlcpy(ui_pk_want[ui_pk_nwant].path, path, sizeof(ui_pk_want[0].path));
             ui_pk_nwant++;
         }
         return 0;
@@ -18505,19 +18513,22 @@ static void ui_pk_loc_full(char *out, size_t size)
 {
     const char *home = getenv("HOME");
 
-    if (ui_pk_loc[0] == '~' && (ui_pk_loc[1] == '/' || !ui_pk_loc[1]) && home)
-        snprintf(out, size, "%s%s", home, ui_pk_loc + 1);
-    else if (ui_pk_loc[0] == '/')
+    if (ui_pk_loc[0] == '~' && (ui_pk_loc[1] == '/' || !ui_pk_loc[1]) && home) {
+        av_strlcpy(out, home, size);
+        av_strlcat(out, ui_pk_loc + 1, size);
+    } else if (ui_pk_loc[0] == '/')
         snprintf(out, size, "%s", ui_pk_loc);
     else
-        snprintf(out, size, "%s/%s", ui_pk_dir, ui_pk_loc);
+        ui_pk_join(out, size, ui_pk_dir, ui_pk_loc);
 }
 
 static void ui_pk_loc_start(void)
 {
     ui_pk_loc_on = 1;
     ui_pk_loc_fresh = 1;
-    snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s", ui_pk_dir, strcmp(ui_pk_dir, "/") ? "/" : "");
+    av_strlcpy(ui_pk_loc, ui_pk_dir, sizeof(ui_pk_loc));
+    if (strcmp(ui_pk_dir, "/"))
+        av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
 }
 
 static void ui_pk_loc_go(void)
@@ -18589,8 +18600,13 @@ static void ui_pk_loc_complete(void)
         }
     }
     closedir(d);
-    if (best[0])
-        snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s%s/", dirpart, strcmp(dirpart, "/") ? "/" : "", best);
+    if (best[0]) {
+        av_strlcpy(ui_pk_loc, dirpart, sizeof(ui_pk_loc));
+        if (strcmp(dirpart, "/"))
+            av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
+        av_strlcat(ui_pk_loc, best, sizeof(ui_pk_loc));
+        av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
+    }
 }
 
 static void ui_pk_toggle_thumbs(void)

@@ -6,6 +6,10 @@ Every update to ffplay-custom, newest first. The numbers match the `patch_queue/
 - `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
 - `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
+## v62
+
+- The "may be truncated" compiler warnings are gone: the file picker now joins and copies paths with FFmpeg's av_strlcpy and av_strlcat, which cut an over-long path at the same place as before. Nothing the player does changes.
+
 ## v61
 
 - Stripfilm scrolling is as it was in v59 again: v60's spring and squeeze are gone, so tiles keep one fixed spacing and no longer overlap when you swipe fast.

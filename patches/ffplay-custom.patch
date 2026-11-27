@@ -1589,7 +1589,7 @@
 +        seeded = 1;
 +    }
 +}
-+
+ 
 +/* A stream that is ending may still read the name of the item it plays, so the name of a removed
 +   playing item is kept until no stream is running (queue_reap, called once a stream has closed). */
 +static void queue_bury(char *name)
@@ -3244,8 +3244,9 @@
 +    if (!ui_bd_tex)
 +        return;
 +    SDL_SetRenderTarget(renderer, ui_bd_tex);
-+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-+    SDL_RenderClear(renderer);
+     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+     SDL_RenderClear(renderer);
+-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
 +    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, NULL, 0, NULL, flip ? SDL_FLIP_VERTICAL : 0);
 +    ok = SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, px, TW * 4) == 0;
 +    SDL_SetRenderTarget(renderer, prev);
@@ -4015,7 +4016,7 @@
 +        total += ui_text_width(names[i], 14) + 8 + 3;
 +    return 2 * ui_pr_mg + ui_text_width(ui_pref_name[row], ui_pr_px) + 26 + UI_PREF_ICW + total;
 +}
- 
++
 +/* Which choice of the row is at x, y? -1 if none (or if the choices are not showing yet) */
 +static int ui_pref_chip_at(int row, const SDL_Rect *p, int x, int y)
 +{
@@ -4483,9 +4484,8 @@
 +    /* Draw the picture into a texture first, so it can be blurred for the glass */
 +    if (ui_scene_tex)
 +        SDL_SetRenderTarget(renderer, ui_scene_tex);
-     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-     SDL_RenderClear(renderer);
--    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderClear(renderer);
 +    ui_live_ok = 0;                             /* set again if a video frame is copied for its tile in this drawing */
 +    if (!is)
 +        ui_blobs();
@@ -11231,7 +11231,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +14119,4983 @@
+@@ -3221,24 +14119,4999 @@
      }
  }
  
@@ -13094,6 +13094,14 @@
 +    return av_strcasecmp(*(char * const *)a, *(char * const *)b);
 +}
 +
++/* v62: out = dir/name, cut to fit */
++static void ui_pk_join(char *out, size_t size, const char *dir, const char *name)
++{
++    av_strlcpy(out, dir, size);
++    av_strlcat(out, "/", size);
++    av_strlcat(out, name, size);
++}
++
 +/* A picture for a folder: the first video in it, else the first song that has a cover, else the same one folder down */
 +static int ui_pk_thumb_folder(const char *dir, int depth, int *tries, uint8_t **out, int *ow, int *oh)
 +{
@@ -13112,7 +13120,7 @@
 +
 +        if (de->d_name[0] == '.')
 +            continue;
-+        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
++        ui_pk_join(full, sizeof(full), dir, de->d_name);
 +        if (stat(full, &st) != 0)
 +            continue;
 +        if (S_ISDIR(st.st_mode)) {
@@ -13140,15 +13148,15 @@
 +    if (ns > 1)
 +        qsort(sub, ns, sizeof(*sub), ui_pk_thumb_namecmp);
 +    for (i = 0; i < nv && !ok && *tries < 6; i++, (*tries)++) {
-+        snprintf(full, sizeof(full), "%s/%s", dir, vid[i]);
++        ui_pk_join(full, sizeof(full), dir, vid[i]);
 +        ok = ui_pk_thumb_decode(full, out, ow, oh);
 +    }
 +    for (i = 0; i < na && !ok && *tries < 6; i++, (*tries)++) {
-+        snprintf(full, sizeof(full), "%s/%s", dir, aud[i]);
++        ui_pk_join(full, sizeof(full), dir, aud[i]);
 +        ok = ui_pk_thumb_decode(full, out, ow, oh);
 +    }
 +    for (i = 0; i < ns && !ok && depth < 2 && *tries < 6; i++) {
-+        snprintf(full, sizeof(full), "%s/%s", dir, sub[i]);
++        ui_pk_join(full, sizeof(full), dir, sub[i]);
 +        ok = ui_pk_thumb_folder(full, depth + 1, tries, out, ow, oh);
 +    }
 +    for (i = 0; i < nv; i++)
@@ -13334,7 +13342,7 @@
 +        if (ui_pk_nwant < UI_PK_TQ) {
 +            ui_pk_want[ui_pk_nwant].key = key;
 +            ui_pk_want[ui_pk_nwant].dir = e->dir;
-+            snprintf(ui_pk_want[ui_pk_nwant].path, sizeof(ui_pk_want[0].path), "%s", path);
++            av_strlcpy(ui_pk_want[ui_pk_nwant].path, path, sizeof(ui_pk_want[0].path));
 +            ui_pk_nwant++;
 +        }
 +        return 0;
@@ -15621,19 +15629,22 @@
 +{
 +    const char *home = getenv("HOME");
 +
-+    if (ui_pk_loc[0] == '~' && (ui_pk_loc[1] == '/' || !ui_pk_loc[1]) && home)
-+        snprintf(out, size, "%s%s", home, ui_pk_loc + 1);
-+    else if (ui_pk_loc[0] == '/')
++    if (ui_pk_loc[0] == '~' && (ui_pk_loc[1] == '/' || !ui_pk_loc[1]) && home) {
++        av_strlcpy(out, home, size);
++        av_strlcat(out, ui_pk_loc + 1, size);
++    } else if (ui_pk_loc[0] == '/')
 +        snprintf(out, size, "%s", ui_pk_loc);
 +    else
-+        snprintf(out, size, "%s/%s", ui_pk_dir, ui_pk_loc);
++        ui_pk_join(out, size, ui_pk_dir, ui_pk_loc);
 +}
 +
 +static void ui_pk_loc_start(void)
 +{
 +    ui_pk_loc_on = 1;
 +    ui_pk_loc_fresh = 1;
-+    snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s", ui_pk_dir, strcmp(ui_pk_dir, "/") ? "/" : "");
++    av_strlcpy(ui_pk_loc, ui_pk_dir, sizeof(ui_pk_loc));
++    if (strcmp(ui_pk_dir, "/"))
++        av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
 +}
 +
 +static void ui_pk_loc_go(void)
@@ -15705,8 +15716,13 @@
 +        }
 +    }
 +    closedir(d);
-+    if (best[0])
-+        snprintf(ui_pk_loc, sizeof(ui_pk_loc), "%s%s%s/", dirpart, strcmp(dirpart, "/") ? "/" : "", best);
++    if (best[0]) {
++        av_strlcpy(ui_pk_loc, dirpart, sizeof(ui_pk_loc));
++        if (strcmp(dirpart, "/"))
++            av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
++        av_strlcat(ui_pk_loc, best, sizeof(ui_pk_loc));
++        av_strlcat(ui_pk_loc, "/", sizeof(ui_pk_loc));
++    }
 +}
 +
 +static void ui_pk_toggle_thumbs(void)
@@ -16218,7 +16234,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +19123,1024 @@
+@@ -3266,6 +19139,1024 @@
  }
  
  /* handle an event sent by the GUI */
@@ -17243,7 +17259,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +20149,104 @@
+@@ -3274,86 +20165,104 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
@@ -17398,7 +17414,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +20263,86 @@
+@@ -3370,40 +20279,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -17497,7 +17513,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +20379,23 @@
+@@ -3440,9 +20395,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -17521,7 +17537,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +20405,21 @@
+@@ -3452,9 +20421,21 @@
              }
              break;
          case SDL_QUIT:
@@ -17544,7 +17560,7 @@
          default:
              break;
          }
-@@ -3524,17 +20489,70 @@
+@@ -3524,17 +20505,70 @@
      return 0;
  }
  
@@ -17622,7 +17638,7 @@
  
      return 0;
  }
-@@ -3678,13 +20696,7 @@
+@@ -3678,13 +20712,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -17637,7 +17653,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +20712,21 @@
+@@ -3700,6 +20728,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -17659,7 +17675,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +20744,9 @@
+@@ -3717,10 +20760,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -17671,7 +17687,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +20754,7 @@
+@@ -3728,7 +20770,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -17680,7 +17696,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +20768,103 @@
+@@ -3742,15 +20784,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }
