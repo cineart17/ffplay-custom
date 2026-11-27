@@ -1,5 +1,21 @@
 # Changelog
 
+Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
+
+## Repository (after v22)
+- `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
+- `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
+
+## v60
+
+- Transitions: a video can open straight into the small tiles without the Stripfilm view flashing past; between the two views, the large tile and the strip tiles glide into their places among the small tiles, and back.
+- The seek and volume bars glide with the large tile to the bottom of the window.
+- Stripfilm scrolling: the strip eases in and settles without overshooting; the middle tile is the largest, with a soft glow, and the others get smaller and dimmer; tiles squeeze together with speed and ease back.
+- Stripfilm: covers and file icons are square too (the rounded corners built into their pictures no longer show).
+- Thumbnails are read ahead of time, nearest to the playing item first, so the strip has them when it opens.
+- Pausing a video with two or more items in the queue now opens the Stripfilm view, not the small tiles.
+- File picker: playing or adding a folder follows the picker's sort order (Name, Modified or Size, either direction).
+
 ## v59
 
 - Scrolling: the spring-loaded squeeze is gone; the tiles scroll as they did before the Stripfilm view (same spacing, same glide).
@@ -17,12 +33,6 @@
 - Stripfilm: tapping a tile plays it and the view stays open.
 - Scrolling (Stripfilm and the small tiles): tighter, with less springing; tiles shrink as much as they come together, so they never overlap.
 - Small tiles: closer together. The music player's own tiles are not touched.
-
-Every update to ffplay-custom, newest first. The numbers match the `patch_queue/patch_queue_vN.py` scripts.
-
-## Repository (after v22)
-- `assets/logo.png`: the ffplay-custom logo, so a fresh setup does not end up with the plain badge.
-- `scripts/install.sh` installs the player, the media-controls helper, the app-menu launcher and the logo.
 
 ## v57
 
