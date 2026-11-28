@@ -9821,6 +9821,8 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
     case SDLK_BACKSPACE: {
         size_t n = strlen(ui_tv_q);
 
+        if (ui_sf_active(is))                   /* v68: the Stripfilm view has no search: the key does what it does everywhere */
+            return 0;
         if (n > 0) {
             do
                 n--;
@@ -9845,6 +9847,8 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
         ui_tv_step(is, 0, -1);
         return 1;
     case SDLK_DOWN:
+        if (ui_sf_active(is))                   /* v68: down moves nothing in the strip: it is the player's key */
+            return 0;
         ui_tv_step(is, 0, 1);
         return 1;
     case SDLK_HOME:
@@ -9854,10 +9858,14 @@ static int ui_tv_key(VideoState *is, SDL_Event *ev)
         ui_tv_step(is, 100000, 0);
         return 1;
     case SDLK_SPACE:
+        if (ui_sf_active(is))                   /* v68: in the Stripfilm view Space is the player's key, as chosen in settings.conf */
+            return 0;
         if (!ui_tv_q[0])
             toggle_pause(is);                   /* nothing typed: Space still pauses */
         return 1;
     default:
+        if (ui_sf_active(is))                   /* v68: every other key works as it does with the view closed (no search from here) */
+            return 0;
         return 1;                               /* the letters belong to the search (they arrive as text) */
     }
 }
@@ -9868,6 +9876,8 @@ static int ui_tv_text(VideoState *is, const char *t)
 
     if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open)
         return 0;
+    if (ui_sf_active(is))
+        return 0;                               /* v68: typing in the Stripfilm view is no search (the tiles of all have it) */
     if (!n && t[0] == ' ')
         return 1;                               /* v65: the Space key pauses (that is done by the key); its typed space is not a search, so the view stays */
     if (ui_sf_mode)
