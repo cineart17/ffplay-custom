@@ -835,7 +835,7 @@
  
      is->width  = w;
      is->height = h;
-@@ -1341,19 +2026,10334 @@
+@@ -1341,19 +2026,10377 @@
      return 0;
  }
  
@@ -1358,7 +1358,7 @@
 +static void ui_glass_bar(const SDL_Rect *t);
 +
 +static int ui_on_top = 0;               /* 1 = the window stays above the others */
- 
++
 +static void ui_toggle_on_top(void)
 +{
 +#if SDL_VERSION_ATLEAST(2, 0, 16)
@@ -4085,7 +4085,7 @@
 +    }
 +    settings_save();
 +}
-+
+ 
 +/* ----- v46: the sliders. Each has a range, what it shows, and how it is put into the setting ----- */
 +static int ui_pref_drag = -1;           /* the slider that is being dragged (-1 = none) */
 +
@@ -6614,6 +6614,9 @@
 +static int ui_flow_last_q = -2;
 +static double ui_flow_pos = 0.0;        /* the item in the middle of the row, between two items while it glides */
 +static int64_t ui_flow_touch = 0;       /* when the row was last swiped */
++static double ui_flow_free = 0.0;       /* v67: miniplayer: where the fingers have taken the row (between two items) */
++static int ui_flow_free_on = 0, ui_flow_free_q = -1;
++static int64_t ui_flow_free_t = 0;
 +static int64_t ui_flow_t = 0;
 +static double ui_flow_ang = 0.0;        /* how far the disc has turned */
 +static int ui_flow_moving = 0;
@@ -9194,6 +9197,7 @@
 +    double rowd;                                /* how far this row is from the row in focus (0 = in focus) */
 +    int64_t born;
 +    int sm;                                     /* a small window: smaller titles */
++    double pitch;                               /* v67: pixels from one tile's middle to the next (0 = the old sw * 1.08) */
 +} UiTvRow;
 +
 +typedef struct {
@@ -9220,7 +9224,7 @@
 +    UiTvOrd ord[128];
 +    double ucen[130], upos = R->pos;            /* v66: where the tiles are, in the room of a video tile (a song is half of one) */
 +    int no = 0, k0, k1, c, o, W = is->width, vm = ui_flow_vmode, K, mix = R->sec < 0 && ui_tv_mixed();
-+    double pitch = R->sw * 1.08;
++    double pitch = R->pitch > 0.0 ? R->pitch : R->sw * 1.08;     /* v67: set by the caller, closer than before */
 +
 +    K = (int)(W / (2.0 * pitch)) + 3;
 +    if (mix)
@@ -9276,7 +9280,7 @@
 +        if (!path)
 +            continue;
 +        play = ui_tv_is_playing(path);
-+        sc = 1.0 - 0.26 * (d < 1.0 ? d * d * (3.0 - 2.0 * d) : 1.0) - 0.035 * FFMIN(FFMAX(d - 1.0, 0.0), 4.0);
++        sc = 1.0 - 0.18 * (d < 1.0 ? d * d * (3.0 - 2.0 * d) : 1.0) - 0.03 * FFMIN(FFMAX(d - 1.0, 0.0), 4.0);     /* v67: the others shrink less */
 +        bw = R->sw * sc;
 +        bh = R->sh * sc;
 +        aud = mix && ui_tv_aud(item);
@@ -9390,7 +9394,7 @@
 +                                   av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * la / 255.0));
 +            ui_pill(&pdot);
 +        }
-+        ui_tv_label(name, hl, px, tx, ty, aud ? (int)(pitch * 0.47) : mix ? (int)(pitch * 0.98) : (int)(pitch * (d < 0.6 ? 1.9 : 1.05)),
++        ui_tv_label(name, hl, px, tx, ty, aud ? (int)(pitch * 0.47) : mix ? (int)(pitch * 0.98) : (int)(pitch * (d < 0.6 ? 1.9 : 0.96)),
 +                    (int)(la * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
 +        if (ui_tvh_n < 128) {
 +            ui_tvh[ui_tvh_n].r.x = tile.x;
@@ -9917,7 +9921,7 @@
 +        double avail = cbot - ctop, rp = avail / R, sh, col = ui_tv_focus % L, rw = ui_tv_focus / L;
 +        int r;
 +
-+        sh = av_clipd(FFMIN(FFMIN(rp * 0.74, rp - 46.0), W * 0.24), 40.0, 340.0);      /* v38: bigger */
++        sh = av_clipd(FFMIN(FFMIN(rp * 0.80, rp - 44.0), W * 0.27), 40.0, 400.0);      /* v67: bigger again */
 +        ui_tv_slot_n = 0;                       /* v60: this frame's places of the tiles (the strip reads them in the next frame, the large tile below in this one) */
 +        ui_tv_slot_at = now;
 +        ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 9.0));
@@ -9943,6 +9947,7 @@
 +            row.cy = ctop + (int)(rp * (rr + 0.5)) - 8;
 +            row.sw = (int)(sh * 1.75);                              /* v66: a song takes half of this width itself (two songs, one video's room) */
 +            row.sh = (int)sh;
++            row.pitch = row.sw * 0.88;                              /* v67: was 1.08: the gap between tiles is about a twelfth of a tile */
 +            row.rowd = fabs(rr - ui_tv_row);
 +            row.born = ui_tv_born;
 +            row.sm = sm;
@@ -10024,6 +10029,18 @@
 +            row.cx = 28 + row.sw / 2;                               /* v64: the first item starts at the far left, under its title */
 +            row.cy = top + 24 + sh / 2 + 6;
 +            row.sh = sh;
++            {                                                       /* v67: the spacing follows the shape of the tiles in the section (covers are square, videos are wide) */
++                double am = 1.0;
++                int ai;
++
++                for (ai = 0; ai < FFMIN(sec->n, 12); ai++) {
++                    double a = ui_cov_aspect(sec->h[ai].path);
++
++                    if (a > am)
++                        am = a;
++                }
++                row.pitch = sh * (0.8 * av_clipd(am, 1.0, 1.78) + 0.17);
++            }
 +            row.rowd = s == ui_tv_act ? 0.0 : 0.45;
 +            row.born = sec->born;
 +            row.sm = sm;
@@ -10458,10 +10475,23 @@
 +    }
 +                                                /* the row stays where it was swiped to until a tap outside the tiles */
 +    ui_flow_target = av_clip(ui_flow_target, 0, q_count - 1);
-+    ui_flow_pos += (ui_flow_target - ui_flow_pos) * (1.0 - exp(-dt * 10.0));
-+    ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
-+    if (!ui_flow_moving)
-+        ui_flow_pos = ui_flow_target;
++    if (ui_flow_free_on && q_pos != ui_flow_free_q)
++        ui_flow_free_on = 0;                    /* v67: a new item started: the row glides to it */
++    if (ui_flow_free_on && now - ui_flow_free_t > 160000) {     /* v67: the fingers are off: the row settles on the nearest item */
++        ui_flow_target = av_clip((int)floor(ui_flow_free + 0.5), 0, q_count - 1);
++        ui_flow_free_on = 0;
++    }
++    if (ui_flow_free_on) {                      /* v67: the row follows the fingers, item by item and in between */
++        double fg = av_clipd(ui_flow_free, 0.0, q_count - 1);
++
++        ui_flow_pos += (fg - ui_flow_pos) * (1.0 - exp(-dt * 18.0));
++        ui_flow_moving = 1;
++    } else {
++        ui_flow_pos += (ui_flow_target - ui_flow_pos) * (1.0 - exp(-dt * 10.0));
++        ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
++        if (!ui_flow_moving)
++            ui_flow_pos = ui_flow_target;
++    }
 +    if (ui_vflow_p != (ui_vflow ? 1.0 : 0.0))
 +        ui_flow_moving = 1;                     /* the video is still shrinking into its tile, or growing back: keep drawing */
 +    if (!is->paused)
@@ -10983,6 +11013,19 @@
 +#endif
 +    if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
 +        amount = -amount;
++    if (ui_pip) {                               /* v67: the miniplayer's music tiles scroll freely (wheel, two fingers, either way) and settle on an item */
++        if (!ui_flow_free_on) {
++            ui_flow_free = ui_flow_pos;
++            ui_flow_free_on = 1;
++        }
++        ui_flow_free = av_clipd(ui_flow_free + amount, 0.0, q_count - 1);
++        ui_flow_free_t = now;
++        ui_flow_free_q = q_pos;
++        ui_flow_target = av_clip((int)floor(ui_flow_free + 0.5), 0, q_count - 1);
++        ui_flow_touch = now;
++        is->force_refresh = 1;
++        return;
++    }
 +    if (now - last > 300000 || amount * acc < 0.0)
 +        acc = 0.0;
 +    last = now;
@@ -11176,7 +11219,7 @@
  }
  
  static double get_clock(Clock *c)
-@@ -1456,9 +12456,14 @@
+@@ -1456,9 +12499,14 @@
  /* seek in the stream */
  static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
  {
@@ -11191,7 +11234,7 @@
          is->seek_flags &= ~AVSEEK_FLAG_BYTE;
          if (by_bytes)
              is->seek_flags |= AVSEEK_FLAG_BYTE;
-@@ -1494,9 +12499,11 @@
+@@ -1494,9 +12542,11 @@
  
  static void update_volume(VideoState *is, int sign, double step)
  {
@@ -11206,7 +11249,7 @@
  }
  
  static void step_to_next_frame(VideoState *is)
-@@ -1757,6 +12764,30 @@
+@@ -1757,6 +12807,30 @@
      return 0;
  }
  
@@ -11237,7 +11280,7 @@
  static int get_video_frame(VideoState *is, AVFrame *frame)
  {
      int got_picture;
-@@ -1772,6 +12803,11 @@
+@@ -1772,6 +12846,11 @@
  
          frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
  
@@ -11249,7 +11292,7 @@
          if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
              if (frame->pts != AV_NOPTS_VALUE) {
                  double diff = dpts - get_master_clock(is);
-@@ -2041,6 +13077,11 @@
+@@ -2041,6 +13120,11 @@
          if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
              goto the_end;
  
@@ -11261,7 +11304,7 @@
          if (got_frame) {
                  tb = (AVRational){1, frame->sample_rate};
  
-@@ -2430,7 +13471,7 @@
+@@ -2430,7 +13514,7 @@
  static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
  {
      VideoState *is = opaque;
@@ -11270,7 +11313,7 @@
  
      audio_callback_time = av_gettime_relative();
  
-@@ -2451,12 +13492,24 @@
+@@ -2451,12 +13535,24 @@
          len1 = is->audio_buf_size - is->audio_buf_index;
          if (len1 > len)
              len1 = len;
@@ -11297,7 +11340,7 @@
          }
          len -= len1;
          stream += len1;
-@@ -2669,7 +13722,8 @@
+@@ -2669,7 +13765,8 @@
          }
          if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
              goto out;
@@ -11307,7 +11350,7 @@
          break;
      case AVMEDIA_TYPE_VIDEO:
          is->video_stream = stream_index;
-@@ -2734,6 +13788,14 @@
+@@ -2734,6 +13831,14 @@
  }
  
  /* this thread gets the stream from the disk or the network */
@@ -11322,7 +11365,7 @@
  static int read_thread(void *arg)
  {
      VideoState *is = arg;
-@@ -2849,6 +13911,7 @@
+@@ -2849,6 +13954,7 @@
      }
  
      is->realtime = is_realtime(ic);
@@ -11330,7 +11373,7 @@
  
      if (show_status)
          av_dump_format(ic, 0, is->filename, 0);
-@@ -2946,6 +14009,10 @@
+@@ -2946,6 +14052,10 @@
              int64_t seek_target = is->seek_pos;
              int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
              int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
@@ -11341,7 +11384,7 @@
  // FIXME the +-2 is due to rounding being not done in the correct direction in generation
  //      of the seek_pos/seek_rel variables
  
-@@ -2965,6 +14032,19 @@
+@@ -2965,6 +14075,19 @@
                  } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
                  }
@@ -11361,7 +11404,7 @@
              }
              is->seek_req = 0;
              is->queue_attachments_req = 1;
-@@ -3000,8 +14080,14 @@
+@@ -3000,8 +14123,14 @@
              if (loop != 1 && (!loop || --loop)) {
                  stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
              } else if (autoexit) {
@@ -11378,7 +11421,7 @@
              }
          }
          ret = av_read_frame(ic, pkt);
-@@ -3057,6 +14143,10 @@
+@@ -3057,6 +14186,10 @@
      if (ret != 0) {
          SDL_Event event;
  
@@ -11389,7 +11432,7 @@
          event.type = FF_QUIT_EVENT;
          event.user.data1 = is;
          SDL_PushEvent(&event);
-@@ -3111,8 +14201,10 @@
+@@ -3111,8 +14244,10 @@
          av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
      startup_volume = av_clip(startup_volume, 0, 100);
      startup_volume = av_clip(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
@@ -11401,7 +11444,7 @@
      is->av_sync_type = av_sync_type;
      is->read_tid     = SDL_CreateThread(read_thread, "read_thread", is);
      if (!is->read_tid) {
-@@ -3124,7 +14216,7 @@
+@@ -3124,7 +14259,7 @@
      return is;
  }
  
@@ -11410,7 +11453,7 @@
  {
      AVFormatContext *ic = is->ic;
      int start_index, stream_index;
-@@ -3203,13 +14295,83 @@
+@@ -3203,13 +14338,83 @@
  }
  
  
@@ -11495,7 +11538,7 @@
  {
      int next = is->show_mode;
      do {
-@@ -3221,24 +14383,4999 @@
+@@ -3221,24 +14426,4999 @@
      }
  }
  
@@ -16498,7 +16541,7 @@
  {
      int64_t pos = get_master_clock(is) * AV_TIME_BASE;
      int i;
-@@ -3266,6 +19403,1036 @@
+@@ -3266,6 +19446,1036 @@
  }
  
  /* handle an event sent by the GUI */
@@ -17535,7 +17578,7 @@
  static void event_loop(VideoState *cur_stream)
  {
      SDL_Event event;
-@@ -3274,86 +20441,104 @@
+@@ -3274,86 +20484,104 @@
      for (;;) {
          double x;
          refresh_loop_wait_event(cur_stream, &event);
@@ -17690,7 +17733,7 @@
              do_seek:
                      if (seek_by_bytes) {
                          pos = -1;
-@@ -3370,40 +20555,86 @@
+@@ -3370,40 +20598,86 @@
                          pos += incr;
                          stream_seek(cur_stream, pos, incr, 1);
                      } else {
@@ -17789,7 +17832,7 @@
              if (event.type == SDL_MOUSEBUTTONDOWN) {
                  if (event.button.button != SDL_BUTTON_RIGHT)
                      break;
-@@ -3440,9 +20671,23 @@
+@@ -3440,9 +20714,23 @@
              break;
          case SDL_WINDOWEVENT:
              switch (event.window.event) {
@@ -17813,7 +17856,7 @@
                      if (cur_stream->vis_texture) {
                          SDL_DestroyTexture(cur_stream->vis_texture);
                          cur_stream->vis_texture = NULL;
-@@ -3452,9 +20697,21 @@
+@@ -3452,9 +20740,21 @@
              }
              break;
          case SDL_QUIT:
@@ -17836,7 +17879,7 @@
          default:
              break;
          }
-@@ -3524,17 +20781,70 @@
+@@ -3524,17 +20824,70 @@
      return 0;
  }
  
@@ -17914,7 +17957,7 @@
  
      return 0;
  }
-@@ -3678,13 +20988,7 @@
+@@ -3678,13 +21031,7 @@
      if (ret < 0)
          exit(ret == AVERROR_EXIT ? 0 : 1);
  
@@ -17929,7 +17972,7 @@
  
      if (display_disable) {
          video_disable = 1;
-@@ -3700,6 +21004,21 @@
+@@ -3700,6 +21047,21 @@
      }
      if (display_disable)
          flags &= ~SDL_INIT_VIDEO;
@@ -17951,7 +17994,7 @@
      if (SDL_Init (flags)) {
          av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
          av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-@@ -3717,10 +21036,9 @@
+@@ -3717,10 +21079,9 @@
  #else
              av_log(NULL, AV_LOG_WARNING, "Your SDL version doesn't support SDL_WINDOW_ALWAYS_ON_TOP. Feature will be inactive.\n");
  #endif
@@ -17963,7 +18006,7 @@
  
  #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
          SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-@@ -3728,7 +21046,7 @@
+@@ -3728,7 +21089,7 @@
          window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
          SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
          if (window) {
@@ -17972,7 +18015,7 @@
              if (!renderer) {
                  av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
                  renderer = SDL_CreateRenderer(window, -1, 0);
-@@ -3742,15 +21060,103 @@
+@@ -3742,15 +21103,103 @@
              av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s", SDL_GetError());
              do_exit(NULL);
          }

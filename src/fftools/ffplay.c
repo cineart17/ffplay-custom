@@ -7795,6 +7795,9 @@ static int ui_flow_target = -1;         /* the item the row is gliding to (the p
 static int ui_flow_last_q = -2;
 static double ui_flow_pos = 0.0;        /* the item in the middle of the row, between two items while it glides */
 static int64_t ui_flow_touch = 0;       /* when the row was last swiped */
+static double ui_flow_free = 0.0;       /* v67: miniplayer: where the fingers have taken the row (between two items) */
+static int ui_flow_free_on = 0, ui_flow_free_q = -1;
+static int64_t ui_flow_free_t = 0;
 static int64_t ui_flow_t = 0;
 static double ui_flow_ang = 0.0;        /* how far the disc has turned */
 static int ui_flow_moving = 0;
@@ -10375,6 +10378,7 @@ typedef struct {
     double rowd;                                /* how far this row is from the row in focus (0 = in focus) */
     int64_t born;
     int sm;                                     /* a small window: smaller titles */
+    double pitch;                               /* v67: pixels from one tile's middle to the next (0 = the old sw * 1.08) */
 } UiTvRow;
 
 typedef struct {
@@ -10401,7 +10405,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
     UiTvOrd ord[128];
     double ucen[130], upos = R->pos;            /* v66: where the tiles are, in the room of a video tile (a song is half of one) */
     int no = 0, k0, k1, c, o, W = is->width, vm = ui_flow_vmode, K, mix = R->sec < 0 && ui_tv_mixed();
-    double pitch = R->sw * 1.08;
+    double pitch = R->pitch > 0.0 ? R->pitch : R->sw * 1.08;     /* v67: set by the caller, closer than before */
 
     K = (int)(W / (2.0 * pitch)) + 3;
     if (mix)
@@ -10457,7 +10461,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
         if (!path)
             continue;
         play = ui_tv_is_playing(path);
-        sc = 1.0 - 0.26 * (d < 1.0 ? d * d * (3.0 - 2.0 * d) : 1.0) - 0.035 * FFMIN(FFMAX(d - 1.0, 0.0), 4.0);
+        sc = 1.0 - 0.18 * (d < 1.0 ? d * d * (3.0 - 2.0 * d) : 1.0) - 0.03 * FFMIN(FFMAX(d - 1.0, 0.0), 4.0);     /* v67: the others shrink less */
         bw = R->sw * sc;
         bh = R->sh * sc;
         aud = mix && ui_tv_aud(item);
@@ -10571,7 +10575,7 @@ static void ui_tv_row_draw(VideoState *is, const UiTvRow *R, int hov_sec, int ho
                                    av_clip(cfg_bar_b + 40, 0, 255), (int)(235 * la / 255.0));
             ui_pill(&pdot);
         }
-        ui_tv_label(name, hl, px, tx, ty, aud ? (int)(pitch * 0.47) : mix ? (int)(pitch * 0.98) : (int)(pitch * (d < 0.6 ? 1.9 : 1.05)),
+        ui_tv_label(name, hl, px, tx, ty, aud ? (int)(pitch * 0.47) : mix ? (int)(pitch * 0.98) : (int)(pitch * (d < 0.6 ? 1.9 : 0.96)),
                     (int)(la * (d < 0.6 ? 1.0 : 0.75 + 0.25 * lf)));
         if (ui_tvh_n < 128) {
             ui_tvh[ui_tvh_n].r.x = tile.x;
@@ -11098,7 +11102,7 @@ static void ui_tv_draw(VideoState *is)
         double avail = cbot - ctop, rp = avail / R, sh, col = ui_tv_focus % L, rw = ui_tv_focus / L;
         int r;
 
-        sh = av_clipd(FFMIN(FFMIN(rp * 0.74, rp - 46.0), W * 0.24), 40.0, 340.0);      /* v38: bigger */
+        sh = av_clipd(FFMIN(FFMIN(rp * 0.80, rp - 44.0), W * 0.27), 40.0, 400.0);      /* v67: bigger again */
         ui_tv_slot_n = 0;                       /* v60: this frame's places of the tiles (the strip reads them in the next frame, the large tile below in this one) */
         ui_tv_slot_at = now;
         ui_tv_pos += (col - ui_tv_pos) * (1.0 - exp(-dt * 9.0));
@@ -11124,6 +11128,7 @@ static void ui_tv_draw(VideoState *is)
             row.cy = ctop + (int)(rp * (rr + 0.5)) - 8;
             row.sw = (int)(sh * 1.75);                              /* v66: a song takes half of this width itself (two songs, one video's room) */
             row.sh = (int)sh;
+            row.pitch = row.sw * 0.88;                              /* v67: was 1.08: the gap between tiles is about a twelfth of a tile */
             row.rowd = fabs(rr - ui_tv_row);
             row.born = ui_tv_born;
             row.sm = sm;
@@ -11205,6 +11210,18 @@ static void ui_tv_draw(VideoState *is)
             row.cx = 28 + row.sw / 2;                               /* v64: the first item starts at the far left, under its title */
             row.cy = top + 24 + sh / 2 + 6;
             row.sh = sh;
+            {                                                       /* v67: the spacing follows the shape of the tiles in the section (covers are square, videos are wide) */
+                double am = 1.0;
+                int ai;
+
+                for (ai = 0; ai < FFMIN(sec->n, 12); ai++) {
+                    double a = ui_cov_aspect(sec->h[ai].path);
+
+                    if (a > am)
+                        am = a;
+                }
+                row.pitch = sh * (0.8 * av_clipd(am, 1.0, 1.78) + 0.17);
+            }
             row.rowd = s == ui_tv_act ? 0.0 : 0.45;
             row.born = sec->born;
             row.sm = sm;
@@ -11639,10 +11656,23 @@ static void ui_flow_draw(VideoState *is)
     }
                                                 /* the row stays where it was swiped to until a tap outside the tiles */
     ui_flow_target = av_clip(ui_flow_target, 0, q_count - 1);
-    ui_flow_pos += (ui_flow_target - ui_flow_pos) * (1.0 - exp(-dt * 10.0));
-    ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
-    if (!ui_flow_moving)
-        ui_flow_pos = ui_flow_target;
+    if (ui_flow_free_on && q_pos != ui_flow_free_q)
+        ui_flow_free_on = 0;                    /* v67: a new item started: the row glides to it */
+    if (ui_flow_free_on && now - ui_flow_free_t > 160000) {     /* v67: the fingers are off: the row settles on the nearest item */
+        ui_flow_target = av_clip((int)floor(ui_flow_free + 0.5), 0, q_count - 1);
+        ui_flow_free_on = 0;
+    }
+    if (ui_flow_free_on) {                      /* v67: the row follows the fingers, item by item and in between */
+        double fg = av_clipd(ui_flow_free, 0.0, q_count - 1);
+
+        ui_flow_pos += (fg - ui_flow_pos) * (1.0 - exp(-dt * 18.0));
+        ui_flow_moving = 1;
+    } else {
+        ui_flow_pos += (ui_flow_target - ui_flow_pos) * (1.0 - exp(-dt * 10.0));
+        ui_flow_moving = fabs(ui_flow_target - ui_flow_pos) > 0.003;
+        if (!ui_flow_moving)
+            ui_flow_pos = ui_flow_target;
+    }
     if (ui_vflow_p != (ui_vflow ? 1.0 : 0.0))
         ui_flow_moving = 1;                     /* the video is still shrinking into its tile, or growing back: keep drawing */
     if (!is->paused)
@@ -12164,6 +12194,19 @@ static void ui_flow_swipe(VideoState *is, SDL_Event *ev, int vertical)
 #endif
     if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
         amount = -amount;
+    if (ui_pip) {                               /* v67: the miniplayer's music tiles scroll freely (wheel, two fingers, either way) and settle on an item */
+        if (!ui_flow_free_on) {
+            ui_flow_free = ui_flow_pos;
+            ui_flow_free_on = 1;
+        }
+        ui_flow_free = av_clipd(ui_flow_free + amount, 0.0, q_count - 1);
+        ui_flow_free_t = now;
+        ui_flow_free_q = q_pos;
+        ui_flow_target = av_clip((int)floor(ui_flow_free + 0.5), 0, q_count - 1);
+        ui_flow_touch = now;
+        is->force_refresh = 1;
+        return;
+    }
     if (now - last > 300000 || amount * acc < 0.0)
         acc = 0.0;
     last = now;
