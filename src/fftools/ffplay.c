@@ -8884,6 +8884,8 @@ typedef struct {
 static int ui_tv_audio = 0;                     /* 1 = the tiled view over a song (a video uses the queue view's own switch) */
 static char ui_tv_q[96];                        /* what was typed */
 static int ui_tv_searching = 0;                 /* the search box has been used (it shows a caret) */
+static SDL_Rect ui_tv_sbox;                     /* v65: where the search box was drawn last, for a tap on it */
+static int ui_tv_sbox_ok = 0;                   /* v65: 1 = the box is on screen (not in the Stripfilm layout) */
 static int ui_tv_focus = 0;                     /* browsing: the queue number in focus */
 static double ui_tv_pos = 0.0, ui_tv_row = 0.0; /* browsing: the column and the row that glide to the focus */
 static UiTvSec ui_tv_sec[4];
@@ -8893,7 +8895,9 @@ static UiTvHitRect ui_tvh[128];
 static int ui_tvh_n = 0;
 static double ui_tv_lift[4096];
 static int ui_tv_press = -1, ui_tv_pressec = -2, ui_tv_drag = 0, ui_tv_px = 0, ui_tv_py = 0;   /* the tile the mouse went down on */
-static int ui_tv_secy[4][2];                    /* the top and bottom of each section (for the wheel) */
+static int ui_tv_secy[4][2];
+static double ui_tv_vs = 0.0, ui_tv_vt = 0.0;   /* v64: how far the page of sections is scrolled (px): now, and where it is going */
+static int ui_tv_last_act = -1;                 /* v64: the section that was last brought into sight */                    /* the top and bottom of each section (for the wheel) */
 static const char * const ui_tv_title[4] = { "In this queue", "In Videos", "In Music", "Elsewhere" };    /* v63 */
 
 /* ---- the folders: Music and Videos are read once in a thread, the search goes over what it has found ---- */
@@ -8905,6 +8909,7 @@ typedef struct {
 static UiTvLib ui_tv_lib[3];                    /* 0 = Music, 1 = Videos, 2 = elsewhere (v63) */
 static char ui_tv_skip[2][1024];                /* the Music and Videos folders: "Elsewhere" does not look in them again */
 static int ui_tv_visits = 0;                    /* how many directory entries the reading may still look at */
+static int ui_tv_keep_scan = 0;                 /* v64: 1 = do not read the folders again now (a menu action rebuilds the lists) */
 static SDL_mutex *ui_tv_mu = NULL;
 static volatile int ui_tv_scan_state = 0;       /* 0 = not yet, 1 = reading, 2 = read */
 static int64_t ui_tv_scan_at = 0;
@@ -9056,7 +9061,7 @@ static void ui_tv_scan_start(void)
 
     if (!ui_tv_mu)
         ui_tv_mu = SDL_CreateMutex();
-    if (!ui_tv_mu || ui_tv_scan_state == 1 || (ui_tv_scan_state == 2 && now - ui_tv_scan_at < 60000000))
+    if (!ui_tv_mu || ui_tv_scan_state == 1 || (ui_tv_scan_state == 2 && (ui_tv_keep_scan || now - ui_tv_scan_at < 60000000)))
         return;                                 /* it is being read, or it was read less than a minute ago */
     SDL_LockMutex(ui_tv_mu);
     for (k = 0; k < 3; k++) {
@@ -9357,6 +9362,8 @@ static void ui_tv_search(void)
         ui_tv_sec[s].born = now;                /* and the tiles spring in */
     }
     ui_tv_act = 0;
+    ui_tv_vs = ui_tv_vt = 0.0;                  /* v64: the page starts at the top */
+    ui_tv_last_act = -1;
     if (!ui_tv_q[0])
         return;
     ui_tv_scan_start();
@@ -9761,10 +9768,10 @@ static int ui_tv_text(VideoState *is, const char *t)
 
     if (!ui_tv_cap(is) || ui_menu_open || ui_prefs_open || ui_q_open || ui_info_open || ui_ctx_open)
         return 0;
+    if (!n && t[0] == ' ')
+        return 1;                               /* v65: the Space key pauses (that is done by the key); its typed space is not a search, so the view stays */
     if (ui_sf_mode)
         ui_sf_level(is, 2);                     /* v57: the search lives in the tiles of all */
-    if (!n && t[0] == ' ')
-        return 1;
     if (n + m >= sizeof(ui_tv_q) - 1)
         return 1;
     memcpy(ui_tv_q + n, t, m + 1);
@@ -10908,6 +10915,8 @@ static void ui_tv_draw(VideoState *is)
     box.h = sm ? 30 : 38;
     box.x = (W - box.w) / 2;
     box.y = sm ? 34 : 44;
+    ui_tv_sbox = box;                           /* v65 */
+    ui_tv_sbox_ok = !vm || ui_sf_p < 0.5;
     {
         int r, g, b, ipx = sm ? 16 : 18, tpx = sm ? 15 : 18, ix = box.x + (sm ? 12 : 16), tx = ix + ipx + 10, cy = box.y + box.h / 2;
         int al = (int)(255 * ep * (vm ? 1.0 - ui_sf_p : 1.0)), fw = box.x + box.w - 18 - tx;      /* fw: the room the text has */
@@ -10994,20 +11003,46 @@ static void ui_tv_draw(VideoState *is)
         }
         if (!sm && ep > 0.9 && W > 480)         /* a quiet hint under the rows */
             ui_label_c(W / 2, H - 46, "Type to search     Enter plays     Esc closes", 13, 255, 255, 255, (int)(95 * ep * (vm ? 1.0 - ui_sf_p : 1.0)));
-    } else if (ui_tv_q[0]) {                    /* searching: three sections, each its own row of matches, the best one in focus */
-        double secH = (cbot - ctop) / 4.0;
-        int sh = (int)av_clipd(FFMIN(secH - 24 - 30, W * 0.2), 36.0, 260.0), tr, tg, tb;     /* v38: bigger */
+    } else if (ui_tv_q[0]) {                    /* searching: the sections one under the other on a page that scrolls (v64) */
+        double avail = cbot - ctop, total = 0.0, maxs, topv[4], hv[4];
+        int sh = (int)av_clipd(FFMIN(avail / 2.0 - 60.0, W * 0.2), 36.0, 260.0), tr, tg, tb, hk, hn = 0;      /* two sections fit a page */
+        SDL_Rect pclip;
 
         ui_tv_theme(&tr, &tg, &tb);
+        for (s = 0; s < 4; s++) {               /* where each section starts on the page */
+            topv[s] = total;
+            hv[s] = ui_tv_sec[s].n > 0 ? sh + 60.0 : 56.0;      /* a section with nothing in it is only its title and a line */
+            total += hv[s];
+        }
+        maxs = FFMAX(total - avail, 0.0);
+        if (ui_tv_act != ui_tv_last_act) {      /* the section the keys moved to comes into sight */
+            ui_tv_last_act = ui_tv_act;
+            if (topv[ui_tv_act] < ui_tv_vt)
+                ui_tv_vt = topv[ui_tv_act];
+            else if (topv[ui_tv_act] + hv[ui_tv_act] > ui_tv_vt + avail)
+                ui_tv_vt = topv[ui_tv_act] + hv[ui_tv_act] - avail;
+        }
+        ui_tv_vt = av_clipd(ui_tv_vt, 0.0, maxs);
+        ui_tv_vs += (ui_tv_vt - ui_tv_vs) * (1.0 - exp(-dt * 12.0));
+        if (fabs(ui_tv_vt - ui_tv_vs) < 0.5)
+            ui_tv_vs = ui_tv_vt;
+        else
+            ui_tv_moving = 1;
+        ui_tv_vs = av_clipd(ui_tv_vs, 0.0, maxs);
+        pclip.x = 0;                            /* nothing of the page is drawn over the search box */
+        pclip.y = ctop;
+        pclip.w = W;
+        pclip.h = (int)avail;
+        SDL_RenderSetClipRect(renderer, &pclip);
         for (s = 0; s < 4; s++) {
             UiTvSec *sec = &ui_tv_sec[s];
             UiTvRow row;
-            int top = ctop + (int)(secH * s), hy = top + 12, a = s == ui_tv_act ? 235 : 150;
+            int top = ctop + (int)(topv[s] - ui_tv_vs), hy = top + 12, a = s == ui_tv_act ? 235 : 150;
             char head[96];
             SDL_Rect mark;
 
-            ui_tv_secy[s][0] = top;
-            ui_tv_secy[s][1] = top + (int)secH;
+            ui_tv_secy[s][0] = FFMAX(top, ctop);
+            ui_tv_secy[s][1] = FFMIN(top + (int)hv[s], ctop + (int)avail);
             snprintf(head, sizeof(head), "%s", ui_tv_title[s]);
             mark.x = 24;
             mark.y = hy - 7;
@@ -11038,15 +11073,20 @@ static void ui_tv_draw(VideoState *is)
             row.first = 0;
             row.count = sec->n;
             row.pos = sec->pos;
-            row.cx = (int)(W * 0.30);
-            row.cy = top + 24 + sh / 2 + 6;
             row.sw = (int)(sh * (s == 2 ? 1.22 : 1.75));            /* v39: music tiles sit closer (v63: Music is the third section) */
+            row.cx = 28 + row.sw / 2;                               /* v64: the first item starts at the far left, under its title */
+            row.cy = top + 24 + sh / 2 + 6;
             row.sh = sh;
             row.rowd = s == ui_tv_act ? 0.0 : 0.45;
             row.born = sec->born;
             row.sm = sm;
             ui_tv_row_draw(is, &row, hs, hi, dt, now, ep);
         }
+        SDL_RenderSetClipRect(renderer, NULL);
+        for (hk = 0; hk < ui_tvh_n; hk++)       /* a tile that is scrolled out of sight cannot be hit */
+            if (ui_tvh[hk].r.y + ui_tvh[hk].r.h / 2 >= ctop && ui_tvh[hk].r.y + ui_tvh[hk].r.h / 2 < cbot)
+                ui_tvh[hn++] = ui_tvh[hk];
+        ui_tvh_n = hn;
         if (ui_tv_scan_state == 1)
             ui_tv_moving = 1;                   /* the folders are still being read: the lists grow */
     }
@@ -11119,6 +11159,14 @@ static int ui_tv_click(VideoState *is, int x, int y)
 {
     int sec, item;
 
+    if (ui_tv_on(is) && ui_tv_cap(is) && !ui_sf_mode && ui_tv_sbox_ok && !ui_tvc_open &&
+        x >= ui_tv_sbox.x && x < ui_tv_sbox.x + ui_tv_sbox.w && y >= ui_tv_sbox.y && y < ui_tv_sbox.y + ui_tv_sbox.h) {
+        ui_tv_searching = 1;                    /* v65: a tap on the box: the caret blinks and the keys type into it */
+        SDL_StartTextInput();
+        ui_tv_moving = 1;
+        is->force_refresh = 1;
+        return 1;
+    }
     if (!ui_tv_hit_at(x, y, &sec, &item))
         return 0;
     ui_tv_press = item;
@@ -11329,8 +11377,27 @@ static void ui_tvc_do(VideoState *is, int act)
             queue_remove(idx);
         break;
     }
-    if (ui_tv_q[0] && act != 0)
-        ui_tv_search();                         /* "In this queue" follows what changed */
+    if (ui_tv_q[0] && act != 0) {               /* "In this queue" follows what changed; the rest of the view stays as it is (v64) */
+        UiTvSec keep[4];
+        double vs = ui_tv_vs, vt = ui_tv_vt;
+        int ka = ui_tv_act, s;
+
+        for (s = 0; s < 4; s++)
+            keep[s] = ui_tv_sec[s];             /* only pos, target and born are used again (the lists are rebuilt) */
+        ui_tv_keep_scan = 1;                    /* the folders are not read again */
+        ui_tv_search();
+        ui_tv_keep_scan = 0;
+        for (s = 0; s < 4; s++) {               /* every section keeps its place and its animation: no new spring-in */
+            ui_tv_sec[s].target = av_clip(keep[s].target, 0, FFMAX(ui_tv_sec[s].n - 1, 0));
+            ui_tv_sec[s].pos = av_clipd(keep[s].pos, 0.0, FFMAX(ui_tv_sec[s].n - 1, 0));
+            ui_tv_sec[s].born = keep[s].born;
+        }
+        if (ui_tv_sec[ka].n > 0)
+            ui_tv_act = ka;
+        ui_tv_vs = vs;                          /* and the page stays scrolled where it was */
+        ui_tv_vt = vt;
+        ui_tv_last_act = ui_tv_act;
+    }
     ui_tv_moving = 1;
     is->force_refresh = 1;
 }
@@ -20196,6 +20263,13 @@ static void ui_wheel_action(VideoState *is, SDL_Event *ev)
     zone = ui_wheel_zone(is);
     if (ui_pip && !zone && !ui_tv_on(is) && ui_flow_on(is) && q_count > 1) {    /* v63: the miniplayer's music tiles: a swipe over them moves through the queue */
         ui_flow_swipe(is, ev, 1);
+        is->force_refresh = 1;
+        return;
+    }
+    if ((ui_tv_q[0] || ui_tv_searching) && ui_tv_on(is) && !zone) {     /* v64: while searching, up and down scroll the page of sections (v65: also when the search was started by a tap) */
+        if (ui_tv_q[0])
+            ui_tv_vt -= ay * 60.0;              /* a wheel up (or fingers down) goes up the page; fingers up goes down it */
+        ui_tv_moving = 1;                       /* v65: with nothing typed yet there are no sections, and the swipe still never closes the view */
         is->force_refresh = 1;
         return;
     }
